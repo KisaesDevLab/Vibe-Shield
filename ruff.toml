@@ -1,0 +1,31 @@
+# Root ruff config. apps/engine inherits this via [tool.ruff] in its pyproject.
+target-version = "py312"
+line-length = 100
+
+extend-exclude = [
+  "qa/corpus",
+  ".venv",
+  "**/__pycache__",
+]
+
+[lint]
+select = [
+  "E", "F", "W",   # pycodestyle / pyflakes
+  "I",             # isort
+  "B",             # bugbear
+  "UP",            # pyupgrade
+  "S",             # bandit (security)
+  "RUF",           # ruff-specific
+]
+ignore = [
+  "E501",          # line length handled by formatter
+  "S101",          # assert in tests is fine
+]
+
+[lint.per-file-ignores]
+"**/tests/**" = ["S"]
+"**/test_*.py" = ["S"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

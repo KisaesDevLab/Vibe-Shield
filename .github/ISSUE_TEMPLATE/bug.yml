@@ -1,0 +1,67 @@
+name: Bug report
+description: Something is broken in the gateway, engine, admin UI, or SDK.
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing. **Do not paste real client data.** If you're reporting a
+        recognizer miss specifically, use the "Recognizer miss" template instead.
+  - type: input
+    id: component
+    attributes:
+      label: Component
+      description: gateway / engine / admin / client SDK / schema / qa / other
+      placeholder: gateway
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      placeholder: v0.1.2 or commit sha
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Observed behavior. Include the redacted error/log snippet.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Use synthetic fixtures only.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      placeholder: |
+        - OS:
+        - Node:
+        - Python:
+        - Docker:
+    validations:
+      required: false
+  - type: checkboxes
+    id: confidentiality
+    attributes:
+      label: Data hygiene
+      options:
+        - label: I confirm this report contains no real client PII or cleartext from production
+          required: true

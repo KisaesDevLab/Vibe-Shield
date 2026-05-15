@@ -1,0 +1,13 @@
+# Default owners for everything. Adjust the team slug if your org structure differs.
+*                           @KisaesDevLab/core
+
+# Compliance artifacts need a compliance reviewer in addition to code review.
+/compliance/                @KisaesDevLab/core @KisaesDevLab/compliance
+/qa/corpus/                 @KisaesDevLab/core @KisaesDevLab/compliance
+
+# Recognizer changes affect the compliance posture and the recall/precision gate.
+/apps/engine/app/recognizers/   @KisaesDevLab/core @KisaesDevLab/compliance
+/apps/engine/app/backstops/     @KisaesDevLab/core @KisaesDevLab/compliance
+
+# Schema / token vault touch encrypted PII at rest — extra eyes.
+/packages/schema/           @KisaesDevLab/core @KisaesDevLab/compliance

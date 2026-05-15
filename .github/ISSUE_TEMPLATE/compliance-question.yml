@@ -1,0 +1,54 @@
+name: Compliance question
+description: A design choice, audit finding, or peer-review question that needs a compliance answer (not a code bug).
+title: "[compliance] "
+labels: ["compliance", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for questions like "does this design satisfy AICPA ET §1.700.040?",
+        peer-review prep, vendor due diligence requests, or WISP/engagement-letter
+        wording. For implementation bugs, use the bug template instead.
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source of question
+      options:
+        - Internal design review
+        - Peer reviewer
+        - State board / regulator
+        - Client / engagement partner
+        - Annual WISP / Safeguards Rule review
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true
+  - type: textarea
+    id: relevant-refs
+    attributes:
+      label: Relevant references
+      description: Cite AICPA / FTC sections, Anthropic terms, or BUILD_PLAN.md sections. Link the supporting artifact in compliance/ if one exists.
+      placeholder: |
+        - AICPA ET §1.700.040
+        - BUILD_PLAN.md §1
+        - compliance/peer-review-faq.md Q3
+    validations:
+      required: false
+  - type: textarea
+    id: current-answer
+    attributes:
+      label: Current best answer (if any)
+    validations:
+      required: false
+  - type: checkboxes
+    id: confidentiality
+    attributes:
+      label: Data hygiene
+      options:
+        - label: This issue contains no real client data, no API keys, and no production secrets
+          required: true

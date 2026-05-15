@@ -1,0 +1,78 @@
+name: Recognizer miss
+description: A PII entity was not detected (false negative) or the wrong text was redacted (false positive).
+title: "[recognizer] "
+labels: ["recognizer", "compliance", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **Synthetic only.** Do not paste real client data — even partially.
+        Reproduce the issue with a Faker-generated fixture and attach that.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - False negative (PII slipped through)
+        - False positive (non-PII was redacted)
+        - Wrong entity type assigned
+    validations:
+      required: true
+  - type: dropdown
+    id: entity
+    attributes:
+      label: Entity type
+      options:
+        - PERSON
+        - LOCATION / address
+        - US_SSN
+        - US_EIN
+        - US_BANK_ACCOUNT
+        - US_BANK_ROUTING
+        - ITIN
+        - DOB
+        - DRIVERS_LICENSE
+        - EMAIL
+        - PHONE
+        - CREDIT_CARD
+        - face / signature (image pipeline)
+        - other (describe below)
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: Synthetic input
+      description: Paste the synthetic text or attach the synthetic image. Faker-style fictitious values only.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual engine output
+      description: Token map / redacted text / bounding boxes returned.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected output
+    validations:
+      required: true
+  - type: input
+    id: severity
+    attributes:
+      label: Severity assessment
+      description: high / medium / low — refer to compliance/recognizers.md severity table.
+      placeholder: high
+    validations:
+      required: true
+  - type: checkboxes
+    id: confidentiality
+    attributes:
+      label: Data hygiene
+      options:
+        - label: All values shown above are synthetic (Faker / fictitious); no real client data is included
+          required: true

@@ -1,0 +1,83 @@
+# Local dev compose. Postgres + Redis come up by default; gateway/engine/admin
+# build only when invoked with `--profile app` (their Dockerfiles arrive in
+# Phases 2/7/13 — running `--profile app` before then will fail to build).
+#
+# Production / appliance deployment uses docker-compose.appliance.yml (Phase 21).
+
+name: vibe-shield-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vibe
+      POSTGRES_PASSWORD: vibe
+      POSTGRES_DB: vibe_shield
+    ports:
+      - "5432:5432"
+    volumes:
+      - vs-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vibe -d vibe_shield"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - vs-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  engine:
+    profiles: ["app"]
+    build:
+      context: ./apps/engine
+    # Engine is internal-only — no host port mapping in production-like configs.
+    # Exposed locally for ad-hoc curl during development.
+    ports:
+      - "8000:8000"
+    environment:
+      LOG_LEVEL: info
+
+  gateway:
+    profiles: ["app"]
+    build:
+      context: ./apps/gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      engine:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgres://vibe:vibe@postgres:5432/vibe_shield
+      REDIS_URL: redis://redis:6379/0
+      ENGINE_URL: http://engine:8000
+      # ANTHROPIC_API_KEY supplied via .env (never committed). Gateway refuses
+      # to start without a verified commercial key (Phase 8).
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+
+  admin:
+    profiles: ["app"]
+    build:
+      context: ./apps/admin
+    ports:
+      - "5173:5173"
+    depends_on:
+      - gateway
+
+volumes:
+  vs-pg:
+  vs-redis:

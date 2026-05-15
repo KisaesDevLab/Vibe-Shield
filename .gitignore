@@ -1,0 +1,75 @@
+# --- Secrets / sensitive material (never commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+
+# --- Real client data — synthetic only goes in qa/corpus/ ---
+qa/corpus/real/
+qa/corpus/**/real/
+
+# --- Node ---
+node_modules/
+dist/
+build/
+out/
+.next/
+.turbo/
+coverage/
+*.tsbuildinfo
+.pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# --- uv ---
+.uv-cache/
+
+# --- spaCy / transformers model caches (let Docker handle these) ---
+*.spacy
+.cache/
+
+# --- IDEs / editors ---
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.DS_Store
+Thumbs.db
+
+# --- Docker / appliance ---
+docker-compose.override.yml
+.docker/
+
+# --- Audit / runtime artifacts ---
+*.log
+logs/
+qa/reports/local/
+ops/local/
+
+# --- Build artifacts that should never be checked in ---
+*.tgz
+*.zip
