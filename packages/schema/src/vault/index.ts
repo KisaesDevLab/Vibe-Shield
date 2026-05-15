@@ -27,3 +27,6 @@ export type {
   IssuedKey,
   ResolvedKey,
 } from './api-key-store.js';
+
+export { AuditLogger } from './audit-logger.js';
+export type { AuditEntry, AuditEventType } from './audit-logger.js';

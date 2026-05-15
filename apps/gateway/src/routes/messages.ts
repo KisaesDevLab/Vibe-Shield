@@ -11,6 +11,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { Router } from 'express';
 import type {
   ApiKeyStore,
+  AuditLogger,
   SessionManager,
   TokenVault,
 } from '@kisaesdevlab/vibe-shield-schema';
@@ -38,6 +39,7 @@ export interface MessagesDeps {
   spendTracker?: SpendTracker;
   policies?: PolicyResolver;
   zdrEnabled?: boolean;
+  audit?: AuditLogger;
 }
 
 export function messagesRouter(deps: MessagesDeps): Router {
@@ -53,6 +55,7 @@ export function messagesRouter(deps: MessagesDeps): Router {
     ...(deps.spendTracker !== undefined ? { spendTracker: deps.spendTracker } : {}),
     ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
     ...(deps.zdrEnabled !== undefined ? { zdrEnabled: deps.zdrEnabled } : {}),
+    ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
   });
 
   router.post('/v1/messages', (req, res, next) => {

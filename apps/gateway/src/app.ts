@@ -9,6 +9,7 @@ import express, { type Express } from 'express';
 import type { Logger } from 'pino';
 import type {
   ApiKeyStore,
+  AuditLogger,
   Database,
   SessionManager,
   TokenVault,
@@ -46,6 +47,7 @@ export interface AppDeps {
   spendTracker?: SpendTracker;
   policies?: PolicyResolver;
   zdrEnabled?: boolean;
+  audit?: AuditLogger;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -84,6 +86,7 @@ export function createApp(deps: AppDeps): Express {
       ...(deps.spendTracker !== undefined ? { spendTracker: deps.spendTracker } : {}),
       ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
       ...(deps.zdrEnabled !== undefined ? { zdrEnabled: deps.zdrEnabled } : {}),
+      ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
     }),
   );
   v1.use(sessionsRouter({ sessions: deps.sessions, defaultTtlMinutes: deps.sessionTtlMinutes }));

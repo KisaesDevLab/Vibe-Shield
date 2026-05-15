@@ -15,6 +15,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages.mjs';
 import {
   type ApiKeyStore,
+  type AuditLogger,
   type SessionManager,
   type TokenVault,
 } from '@kisaesdevlab/vibe-shield-schema';
@@ -53,6 +54,7 @@ export interface OrchestratorDeps {
   /** When the gateway is configured with ZDR. Policies that
    *  require ZDR refuse if this is false. */
   zdrEnabled?: boolean;
+  audit?: AuditLogger;
 }
 
 export interface ProxyResult {
@@ -123,6 +125,38 @@ export class ProxyOrchestrator {
       sessionId,
       policy: policy.reid,
     });
+
+    // 6. Audit. Best-effort: log a warning if it fails so the request
+    //    isn't taken down by an audit subsystem hiccup. The append-only
+    //    trigger means we never insert garbage.
+    if (this.deps.audit !== undefined) {
+      try {
+        await this.deps.audit.append({
+          tenantId: auth.tenantId,
+          sessionId,
+          eventType: 'request',
+          payload: {
+            app_id: auth.appId,
+            model: anthropicParams.model,
+            input_tokens: anthropicResponse.usage.input_tokens,
+            output_tokens: anthropicResponse.usage.output_tokens,
+            policy_name: policy.name,
+            zdr: this.deps.zdrEnabled === true,
+          },
+        });
+        if (policy.reid.mode !== 'none') {
+          await this.deps.audit.append({
+            tenantId: auth.tenantId,
+            sessionId,
+            eventType: 'reidentify',
+            payload: { mode: policy.reid.mode, model: anthropicParams.model },
+          });
+        }
+      } catch {
+        // Swallow on the request path; an audit cron alarm will surface
+        // sustained insert failures.
+      }
+    }
 
     return { response: reidentified, sessionId };
   }

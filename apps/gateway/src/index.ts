@@ -16,6 +16,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { Redis } from 'ioredis';
 import {
   ApiKeyStore,
+  AuditLogger,
   SessionManager,
   TokenVault,
   createDatabase,
@@ -74,6 +75,8 @@ async function main(): Promise<void> {
   const policies = new PolicyResolver(dbHandle.db);
   await policies.ensureLoaded();
 
+  const audit = new AuditLogger(dbHandle.db);
+
   const app = createApp({
     db: dbHandle.db,
     apiKeys,
@@ -86,6 +89,7 @@ async function main(): Promise<void> {
     spendTracker,
     policies,
     zdrEnabled: config.ZDR_ENABLED,
+    audit,
     logger,
     maxRequestBytes: config.MAX_REQUEST_BYTES,
     sessionTtlMinutes: config.SESSION_TTL_MINUTES,
