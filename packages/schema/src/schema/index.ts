@@ -5,3 +5,4 @@ export * from './policies.js';
 export * from './audit.js';
 export * from './recognizer-misses.js';
 export * from './tenant-keys.js';
+export * from './api-keys.js';

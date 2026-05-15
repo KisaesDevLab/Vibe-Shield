@@ -1,0 +1,137 @@
+/**
+ * Anthropic-shaped error envelope + domain exceptions.
+ *
+ * Anthropic's API returns errors as:
+ *   {
+ *     "type": "error",
+ *     "error": { "type": "<kind>", "message": "<text>" }
+ *   }
+ *
+ * We mirror that exactly so existing ``@anthropic-ai/sdk`` consumers
+ * don't have to handle a second error shape. Hard rule #1 applies:
+ * ``message`` carries only safe text — never request bodies, never
+ * exception messages built from user input.
+ */
+
+import type { ErrorRequestHandler, Request, Response, NextFunction } from 'express';
+import { ZodError } from 'zod';
+import { getCorrelationId } from './logging.js';
+
+export type AnthropicErrorKind =
+  | 'invalid_request_error'
+  | 'authentication_error'
+  | 'permission_error'
+  | 'not_found_error'
+  | 'rate_limit_error'
+  | 'api_error'
+  | 'overloaded_error';
+
+export interface AnthropicError {
+  type: 'error';
+  error: { type: AnthropicErrorKind; message: string };
+  correlation_id: string | null;
+}
+
+function envelope(kind: AnthropicErrorKind, message: string): AnthropicError {
+  return {
+    type: 'error',
+    error: { type: kind, message },
+    correlation_id: getCorrelationId() ?? null,
+  };
+}
+
+export class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly kind: AnthropicErrorKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'HttpError';
+  }
+
+  toEnvelope(): AnthropicError {
+    return envelope(this.kind, this.message);
+  }
+}
+
+export class AuthenticationError extends HttpError {
+  constructor(message: string = 'Authentication failed') {
+    super(401, 'authentication_error', message);
+    this.name = 'AuthenticationError';
+  }
+}
+
+export class PermissionError extends HttpError {
+  constructor(message: string = 'Permission denied') {
+    super(403, 'permission_error', message);
+    this.name = 'PermissionError';
+  }
+}
+
+export class NotFoundError extends HttpError {
+  constructor(message: string = 'Not found') {
+    super(404, 'not_found_error', message);
+    this.name = 'NotFoundError';
+  }
+}
+
+export class InvalidRequestError extends HttpError {
+  constructor(message: string = 'Invalid request') {
+    super(400, 'invalid_request_error', message);
+    this.name = 'InvalidRequestError';
+  }
+}
+
+export class NotImplementedError extends HttpError {
+  constructor(message: string = 'Not implemented') {
+    super(501, 'api_error', message);
+    this.name = 'NotImplementedError';
+  }
+}
+
+export class EngineUnavailableError extends HttpError {
+  constructor(message: string = 'Engine unavailable') {
+    super(503, 'api_error', message);
+    this.name = 'EngineUnavailableError';
+  }
+}
+
+/**
+ * Express error-handling middleware.
+ *
+ * - Known ``HttpError`` subclasses → their declared status + envelope.
+ * - ``ZodError`` → 400 with field paths only (never the offending value;
+ *   Zod's ``input`` mirror of the offending field would leak PII).
+ * - Anything else → 500 with a generic message. The actual exception is
+ *   logged via ``error_class`` only.
+ */
+export const errorHandler: ErrorRequestHandler = (err: unknown, req: Request, res: Response, _next: NextFunction): void => {
+  const logger = (req as { log?: { error: (o: object, msg: string) => void } }).log;
+  if (err instanceof HttpError) {
+    if (logger !== undefined) {
+      logger.error({ error_class: err.name, status: err.status }, 'http_error');
+    }
+    res.status(err.status).json(err.toEnvelope());
+    return;
+  }
+  if (err instanceof ZodError) {
+    const fields = err.issues
+      .map((issue) => issue.path.join('.'))
+      .filter((p) => p !== '');
+    if (logger !== undefined) {
+      logger.error({ error_class: 'ZodError', fields }, 'validation_error');
+    }
+    res
+      .status(400)
+      .json(envelope('invalid_request_error', `validation failed: ${fields.join(', ')}`));
+    return;
+  }
+  if (logger !== undefined) {
+    logger.error(
+      { error_class: err instanceof Error ? err.name : 'Unknown' },
+      'internal_error',
+    );
+  }
+  res.status(500).json(envelope('api_error', 'Internal server error'));
+};

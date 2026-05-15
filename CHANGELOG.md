@@ -4,6 +4,28 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — Phase 7: Node.js gateway service skeleton
+
+- `apps/gateway` workspace (`@kisaesdevlab/vibe-shield-gateway`): Express 5 + Pino + Zod, strict tsconfig matching `packages/schema`.
+- New `vs_api_keys` table + migration `0002_api_keys.sql`. Key format: `vs_live_<24 base62 chars>` (~143 bits entropy). Only `SHA-256(full_key)` lands in the DB; cleartext is shown to the operator exactly once at issue time. `ApiKeyStore` in `packages/schema` with `issue` / `resolve` (with `timingSafeEqual` on the hash) / `revoke`. `ApiKeyInvalidError` / `ApiKeyRevokedError` distinguished.
+- Middleware chain (order matters):
+  - **Correlation ID** — honors `X-Correlation-Id`, mints a UUID v4 if absent, propagates via `AsyncLocalStorage` so the logger picks it up without thread-local plumbing.
+  - **Access log** — Pino. Captures method / path / status / latency / request_bytes / tenant_id / app_id. Never the body. Custom `serializers` block default body capture.
+  - **Size limit** — rejects oversized payloads before the JSON parser allocates.
+  - **API key auth** — parses `Authorization: Bearer vs_live_…`, attaches `{ tenantId, appId, keyName }` to `req.auth`.
+- Routes:
+  - `GET /health` (liveness).
+  - `GET /ready` (DB ping via `SELECT 1`).
+  - `POST /v1/messages` — full Anthropic Messages API zod validation; returns 501 with an Anthropic-shaped envelope. The actual proxy (streaming, tool use, system-prompt scrubbing, consumer-key block) lands in Phase 8.
+  - `POST /v1/sessions`, `GET /v1/sessions/:id`, `DELETE /v1/sessions/:id` — the endpoints Phase 6 deferred. Cross-tenant lookups return 404 (never 403) so existence isn't leaked.
+  - `GET /openapi.json` — hand-written OpenAPI 3.1 spec.
+- Anthropic-shaped error envelope (`{ type: "error", error: { type, message }, correlation_id }`) for every non-success response. Sanitized handlers for `ZodError` (field paths only — no `input` echo) and unhandled exceptions (logs `error_class`, returns generic 500).
+- Tests (23 supertest+vitest cases, all integration against real Postgres):
+  - **health/openapi/correlation (5)** — endpoint shape, OpenAPI spec validity, correlation-ID echo + auto-mint.
+  - **auth (6)** — missing header, non-Bearer, malformed key, unknown key, revoked-key=403, valid-key=201.
+  - **messages (5)** — 501 with Phase-8 message, 400 on missing model, 400 on wrong role, **PII fragments (`234-56-7890`, `Jane Doe`) never appear in any 400 validation body**, 401 without auth.
+  - **sessions (7)** — create with default + custom TTL, malformed body=400, get-by-id, cross-tenant returns 404 not 403, non-UUID=400, delete-then-not-found.
+
 ### Added — Phase 6: Deterministic tokenization & session management
 
 - `SessionManager` (`packages/schema/src/vault/session-manager.ts`): `create` / `get` / `touch` / `delete` / `purgeExpired` / `countActive`. Default 60-minute TTL per BUILD_PLAN §6; `SessionExpiredError` distinguishes expired-but-present from missing.
