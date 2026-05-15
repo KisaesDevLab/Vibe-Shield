@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from prometheus_client import CollectorRegistry, Counter, Histogram, make_asgi_app
 
 REGISTRY = CollectorRegistry()
@@ -29,5 +31,7 @@ ENTITIES_DETECTED = Counter(
 )
 
 
-def metrics_asgi_app():  # type: ignore[no-untyped-def]
+def metrics_asgi_app() -> Any:
+    """Return the Prometheus ASGI app. Typed as ``Any`` because
+    prometheus_client lacks stubs for the ASGI callable shape."""
     return make_asgi_app(registry=REGISTRY)

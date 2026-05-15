@@ -4,7 +4,8 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 
-from fastapi import HTTPException, Request, Response, status
+from fastapi import Request, Response, status
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.logging import correlation_id_ctx, get_logger
@@ -56,19 +57,23 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
+        # Middlewares run at Starlette layer — exceptions raised here are not
+        # caught by FastAPI's HTTPException handler. Return a JSONResponse
+        # directly so the client sees the 413 / 400.
         cl = request.headers.get("content-length")
         if cl is not None:
             try:
-                if int(cl) > self.max_bytes:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail=f"request exceeds max_bytes={self.max_bytes}",
-                    )
+                content_length = int(cl)
             except ValueError:
-                raise HTTPException(
+                return JSONResponse(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="invalid content-length",
-                ) from None
+                    content={"detail": "invalid content-length"},
+                )
+            if content_length > self.max_bytes:
+                return JSONResponse(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    content={"detail": f"request exceeds max_bytes={self.max_bytes}"},
+                )
         return await call_next(request)
 
 

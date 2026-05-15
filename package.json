@@ -2,6 +2,7 @@
   "name": "vibe-shield",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "description": "Self-hosted PII redaction gateway between Vibe apps and the Anthropic Claude API.",
   "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@9.15.0",

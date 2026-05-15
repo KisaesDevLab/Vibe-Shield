@@ -61,7 +61,9 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
     app.mount("/metrics", metrics_asgi_app())
 
     def get_analyzer(req: Request) -> AnalyzerService:
-        return req.app.state.analyzer
+        analyzer_obj = req.app.state.analyzer
+        assert isinstance(analyzer_obj, AnalyzerService)
+        return analyzer_obj
 
     @app.get("/health", response_model=HealthResponse)
     def health(a: AnalyzerService = Depends(get_analyzer)) -> HealthResponse:
@@ -77,7 +79,15 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
     def recognizers(a: AnalyzerService = Depends(get_analyzer)) -> RecognizersResponse:
         return RecognizersResponse(
             model=a.spacy_model,
-            recognizers=[RecognizerInfo(**r) for r in a.list_recognizers()],
+            recognizers=[
+                RecognizerInfo(
+                    name=r["name"],
+                    supported_entities=r["supported_entities"],
+                    supported_language=r["supported_language"],
+                    version=r["version"],
+                )
+                for r in a.list_recognizers()
+            ],
         )
 
     @app.post("/analyze", response_model=AnalyzeResponse)

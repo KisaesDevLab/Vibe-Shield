@@ -13,7 +13,7 @@ import sys
 from contextvars import ContextVar
 from typing import Any
 
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger.json import JsonFormatter
 
 correlation_id_ctx: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 
@@ -40,7 +40,7 @@ class _CorrelationFilter(logging.Filter):
         return True
 
 
-class _SafeJsonFormatter(jsonlogger.JsonFormatter):
+class _SafeJsonFormatter(JsonFormatter):
     """Drops any ``extra`` field not on the allowlist.
 
     This is the structural enforcement of "no payload bodies in logs". A

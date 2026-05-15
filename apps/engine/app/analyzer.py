@@ -11,11 +11,19 @@ raises and the FastAPI lifespan handler refuses to start the app.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypedDict
 
 from presidio_analyzer import AnalyzerEngine, RecognizerResult
 from presidio_analyzer.nlp_engine import NlpEngineProvider
 
 from app.logging import get_logger
+
+
+class RecognizerInfoDict(TypedDict):
+    name: str
+    supported_entities: list[str]
+    supported_language: str
+    version: str
 
 logger = get_logger("vibe_shield.engine.analyzer")
 
@@ -28,7 +36,7 @@ class EntitySpan:
     score: float
 
     @classmethod
-    def from_presidio(cls, r: RecognizerResult) -> "EntitySpan":
+    def from_presidio(cls, r: RecognizerResult) -> EntitySpan:
         return cls(entity_type=r.entity_type, start=r.start, end=r.end, score=r.score)
 
 
@@ -76,15 +84,22 @@ class AnalyzerService:
         )
         return [EntitySpan.from_presidio(r) for r in results]
 
-    def list_recognizers(self) -> list[dict[str, object]]:
-        out: list[dict[str, object]] = []
+    def list_recognizers(self) -> list[RecognizerInfoDict]:
+        # Presidio's Recognizer doesn't ship type stubs — the attribute reads
+        # below would all be `Any`. Cast at the boundary so callers see real
+        # types.
+        out: list[RecognizerInfoDict] = []
         for r in self.engine.registry.recognizers:
+            name: str = str(r.name)  # type: ignore[has-type]
+            entities: list[str] = [str(e) for e in r.supported_entities]
+            lang: str = str(r.supported_language)
+            version: str = str(getattr(r, "version", "1.0.0"))
             out.append(
-                {
-                    "name": r.name,
-                    "supported_entities": list(r.supported_entities),
-                    "supported_language": r.supported_language,
-                    "version": getattr(r, "version", "1.0.0"),
-                }
+                RecognizerInfoDict(
+                    name=name,
+                    supported_entities=entities,
+                    supported_language=lang,
+                    version=version,
+                )
             )
         return out

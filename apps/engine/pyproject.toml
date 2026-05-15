@@ -11,6 +11,10 @@ dependencies = [
     "presidio-analyzer==2.2.358",
     "presidio-anonymizer==2.2.358",
     "spacy==3.7.5",
+    # spaCy 3.7.x ships thinc wheels built against NumPy 1.x; pulling NumPy
+    # 2.x triggers an ABI mismatch ("numpy.dtype size changed"). Pin <2
+    # until we move to spaCy >=3.8 in a later phase.
+    "numpy<2.0",
     # Pinned per BUILD_PLAN.md Phase 2; transformer-based recognizers come online
     # in later phases. No torch/tf backend installed by default — see Dockerfile
     # for the production install variant.
@@ -34,6 +38,11 @@ dev = [
     "faker>=33.1",
     "ruff>=0.8",
     "mypy>=1.13",
+    # Small spaCy model for the test suite. Production Docker bundles
+    # en_core_web_lg instead; declaring sm here keeps `uv sync` enough to
+    # run the unit tests without a separate `python -m spacy download` step
+    # (uv venvs ship without pip, so spaCy's CLI downloader can't run).
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl",
 ]
 
 [build-system]

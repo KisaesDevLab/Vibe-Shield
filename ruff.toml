@@ -21,6 +21,20 @@ ignore = [
   "E501",          # line length handled by formatter
   "S101",          # assert in tests is fine
 ]
+[lint.flake8-bugbear]
+# B008 fires on FastAPI's `Depends(...)` argument-default idiom — that's
+# the framework's intended usage, not a bug. Same for Query/Path/Body/Header.
+extend-immutable-calls = [
+  "fastapi.Depends",
+  "fastapi.Query",
+  "fastapi.Path",
+  "fastapi.Body",
+  "fastapi.Header",
+  "fastapi.Cookie",
+  "fastapi.Form",
+  "fastapi.File",
+  "fastapi.Security",
+]
 
 [lint.per-file-ignores]
 "**/tests/**" = ["S"]
