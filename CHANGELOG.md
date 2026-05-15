@@ -4,6 +4,33 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-05-15
+
+### Added — production-readiness punch list (§1)
+
+Operational gaps from v1.0 that surfaced before any real deployment. Single PR (#13), eight focused commits.
+
+- **CI dry-run executed.** First real PR ran the full pipeline (Node + Python + image build) end-to-end. Two issues surfaced and were fixed: (a) `pnpm/action-setup@v4` `version: 9` conflicted with `packageManager: pnpm@9.15.0` in `package.json` — drop the action arg, `packageManager` is canonical; (b) Ruff `UP037` on `list["BackstopMiss"]` — `from __future__ import annotations` defers all annotations already, so the string quotes are unnecessary.
+- **Gateway Dockerfile** (`apps/gateway/Dockerfile`). Node 24 multi-stage. Builder runs `pnpm install --frozen-lockfile` (incl. devDeps) then `pnpm exec tsc -p tsconfig.json` per workspace, then `pnpm --filter @kisaesdevlab/vibe-shield-gateway --prod deploy /pruned`. Runtime is non-root (`vibe:vibe`) with a `HEALTHCHECK` against `/health`. Final image **373 MB**. Release workflow matrix updated to build both engine and gateway; gateway uses workspace-root context for the schema dep.
+- **Engine image size verified.** Replaced bash process substitution with `uv sync --frozen --no-dev` against the committed `uv.lock`; `uv run --with pip python -m spacy download ${SPACY_MODEL}` for `en_core_web_lg`. Final image **565 MB** — well under the BUILD_PLAN §2 acceptance criterion of 2.5 GB.
+- **`vs_recognizer_misses` end-to-end wiring.** Engine `/redact` now returns a `misses: RecognizerMissEntry[]` field alongside spans. New `analyze_with_misses(...)` path in the analyzer + backstop layer keeps the legacy `analyze` API working. Gateway's redactor accumulates misses across multi-string requests; `RecognizerMissStore.recordBatch(...)` persists them best-effort to `vs_recognizer_misses`. Backstop misses are now queryable from SQL, not just observable in Pino logs.
+- **KEK rotation script** (`packages/schema/scripts/rotate-kek.ts`). Two input modes: env vars (`OLD_VS_KEK` / `NEW_VS_KEK`) for unattended IR work, or `--interactive` for break-glass with hidden TTY entry. Mandatory mutually-exclusive `--dry-run` (counts rows, no writes) or `--apply` (single transaction over all `vs_tenant_keys` rows; rewraps DEK under the new KEK). Buffers zeroed in `finally`. Closes the IR runbook gap that referenced the missing `rewrap-keks.js`. Exposed via `make rotate-kek-dry` / `make rotate-kek-apply`.
+- **OpenAPI spec refresh** (`apps/gateway/src/routes/openapi.ts`). v1.0.1 spec covers full `/v1/messages` request + response, `/v1/sessions/:id/materialize`, `/metrics`, `vs-session-id` response header, and every error envelope (400/401/403/429/503).
+- **Migration tracking via Drizzle's `_journal.json`.** Replaced the hand-rolled `runMigrations` with Drizzle's official `migrate(db, { migrationsFolder })`. Migrations renumbered `0000_initial.sql` / `0001_api_keys.sql` / `0002_spend_records.sql` (zero-indexed); `_journal.json` indexes them. Drizzle's `__drizzle_migrations` tracking table prevents the `relation already exists` failure when re-running against a partially-migrated DB. Gateway no longer runs migrations at boot — deploy a one-shot `node packages/schema/dist/scripts/migrate.js` (or `make migrate`) before starting it. New `tsconfig.scripts.json` for the CLI scripts that fall outside `rootDir=src/`.
+- **lg recall baseline** (`qa/reports/baseline-lg.json`). Production uses `en_core_web_lg`; the baseline was on `sm`. Re-ran the QA harness against `lg` and committed the report. **Recall 1.00 across every entity type**; PERSON precision 0.96 (vs 0.92 on `sm`); the B1 blocker (US_BANK_ACCOUNT 0.45 / PHONE_NUMBER 0.77 precision exemptions) holds — recall is compliant, precision tuning deferred to v1.1 architectural work.
+
+### Fixed
+
+- **Drizzle `--> statement-breakpoint` parser foot-gun.** Drizzle's split is naive — it doesn't parse SQL comments. The header comment in `0000_initial.sql` mentioned the literal phrase, so it got split into a stray comment chunk and Postgres rejected it. Removed the offending header text. Worth knowing for future migration authors.
+- Two `_PoisonAnalyzer` / `_UnavailableAnalyzer` test classes updated to override `analyze_with_misses` (the route now uses it instead of `analyze`). Confirms the fail-closed contract still holds when the misses path raises.
+
+### Operational
+
+- **`make migrate`** — one-shot migration runner for the deploy pipeline.
+- **`make rotate-kek-dry` / `make rotate-kek-apply`** — KEK rotation entry points for IR runbook step 4.
+
+## [1.0.0] — 2026-05-15
+
 ### Added — Phase 8b: streaming, retry, rate limiting, spend caps
 
 Closes Phase 8. Five things:
