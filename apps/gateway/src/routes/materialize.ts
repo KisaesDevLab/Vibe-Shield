@@ -28,6 +28,7 @@ import {
   NotFoundError,
   PermissionError,
 } from '../errors.js';
+import { materializeEvents } from '../metrics.js';
 import { CONVERTER_OUTPUT } from '../policy/built-in.js';
 import type { PolicyResolver } from '../policy/resolver.js';
 
@@ -130,6 +131,10 @@ export function materializeRouter(deps: MaterializeDeps): Router {
           });
         }
 
+        materializeEvents.inc({
+          tenant_id: req.auth.tenantId,
+          app_id: req.auth.appId,
+        });
         res.json({
           materialized,
           output_sha256: outputHash,
