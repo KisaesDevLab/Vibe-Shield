@@ -147,7 +147,7 @@ class AnalyzerService:
         text: str,
         language: str | None = None,
         entities: list[str] | None = None,
-    ) -> tuple[list[EntitySpan], list["BackstopMiss"]]:
+    ) -> tuple[list[EntitySpan], list[BackstopMiss]]:
         """Same as ``analyze`` but also returns the list of
         ``BackstopMiss`` events for the request. Used by the /redact
         route to surface misses in the response so the gateway can
