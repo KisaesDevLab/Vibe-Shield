@@ -117,6 +117,8 @@ export function buildTestApp(deps: {
   vault?: TokenVault;
   engine?: EngineClient;
   anthropic?: AnthropicMessagesClient;
+  policies?: import('../src/policy/resolver.js').PolicyResolver;
+  audit?: import('@kisaesdevlab/vibe-shield-schema').AuditLogger;
 }) {
   const apiKeys = deps.apiKeys ?? new ApiKeyStore(deps.handle.db);
   const sessions = deps.sessions ?? new SessionManager(deps.handle.db);
@@ -133,6 +135,8 @@ export function buildTestApp(deps: {
     logger: silentLogger(),
     maxRequestBytes: 64 * 1024,
     sessionTtlMinutes: 60,
+    ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
+    ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
   });
 }
 

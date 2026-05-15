@@ -25,6 +25,7 @@ import type { PolicyResolver } from './policy/resolver.js';
 import type { RateLimiter } from './quota/rate-limiter.js';
 import type { SpendTracker } from './quota/spend-cap.js';
 import { healthRouter } from './routes/health.js';
+import { materializeRouter } from './routes/materialize.js';
 import { messagesRouter } from './routes/messages.js';
 import { openapiRouter } from './routes/openapi.js';
 import { readyRouter } from './routes/ready.js';
@@ -90,6 +91,14 @@ export function createApp(deps: AppDeps): Express {
     }),
   );
   v1.use(sessionsRouter({ sessions: deps.sessions, defaultTtlMinutes: deps.sessionTtlMinutes }));
+  v1.use(
+    materializeRouter({
+      vault: deps.vault,
+      sessions: deps.sessions,
+      ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
+      ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
+    }),
+  );
   app.use(v1);
 
   app.use(errorHandler);
