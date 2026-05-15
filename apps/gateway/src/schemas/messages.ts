@@ -74,6 +74,9 @@ export const messagesRequest = z
     /** Vibe-Shield extension: identifies which token-vault session this
      *  request belongs to. Optional today; Phase 8 wires it. */
     session_id: z.string().uuid().optional(),
+    /** Vibe-Shield extension: requested policy name. Falls back to the
+     *  app's built-in if not supplied (Phase 10). */
+    policy_name: z.string().min(1).optional(),
   })
   .passthrough();
 

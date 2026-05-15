@@ -19,6 +19,7 @@ import type { EngineClient } from '../engine/client.js';
 import { AuthenticationError, NotImplementedError } from '../errors.js';
 import { getCorrelationId } from '../middleware/correlation-storage.js';
 import { messagesRequest } from '../schemas/messages.js';
+import type { PolicyResolver } from '../policy/resolver.js';
 import { ProxyOrchestrator } from '../proxy/orchestrator.js';
 import { streamProxy } from '../proxy/streaming.js';
 import type { RateLimiter } from '../quota/rate-limiter.js';
@@ -35,6 +36,8 @@ export interface MessagesDeps {
   defaultSessionTtlMinutes: number;
   rateLimiter?: RateLimiter;
   spendTracker?: SpendTracker;
+  policies?: PolicyResolver;
+  zdrEnabled?: boolean;
 }
 
 export function messagesRouter(deps: MessagesDeps): Router {
@@ -48,6 +51,8 @@ export function messagesRouter(deps: MessagesDeps): Router {
     defaultSessionTtlMinutes: deps.defaultSessionTtlMinutes,
     ...(deps.rateLimiter !== undefined ? { rateLimiter: deps.rateLimiter } : {}),
     ...(deps.spendTracker !== undefined ? { spendTracker: deps.spendTracker } : {}),
+    ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
+    ...(deps.zdrEnabled !== undefined ? { zdrEnabled: deps.zdrEnabled } : {}),
   });
 
   router.post('/v1/messages', (req, res, next) => {

@@ -27,6 +27,7 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { EngineClient } from './engine/client.js';
 import { createLogger } from './logging.js';
+import { PolicyResolver } from './policy/resolver.js';
 import { RateLimiter } from './quota/rate-limiter.js';
 import { SpendTracker } from './quota/spend-cap.js';
 import { PerTenantKeyResolver } from './tenant-key/resolver.js';
@@ -70,6 +71,9 @@ async function main(): Promise<void> {
     defaultCapMicrodollars: BigInt(config.SPEND_CAP_MICRODOLLARS),
   });
 
+  const policies = new PolicyResolver(dbHandle.db);
+  await policies.ensureLoaded();
+
   const app = createApp({
     db: dbHandle.db,
     apiKeys,
@@ -80,6 +84,8 @@ async function main(): Promise<void> {
     anthropicSdk,
     rateLimiter,
     spendTracker,
+    policies,
+    zdrEnabled: config.ZDR_ENABLED,
     logger,
     maxRequestBytes: config.MAX_REQUEST_BYTES,
     sessionTtlMinutes: config.SESSION_TTL_MINUTES,
