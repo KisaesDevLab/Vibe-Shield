@@ -4,6 +4,7 @@
  * real deps.
  */
 
+import type Anthropic from '@anthropic-ai/sdk';
 import express, { type Express } from 'express';
 import type { Logger } from 'pino';
 import type {
@@ -19,6 +20,8 @@ import { accessLogMiddleware } from './middleware/access-log.js';
 import { apiKeyMiddleware } from './middleware/api-key.js';
 import { correlationIdMiddleware } from './middleware/correlation-id.js';
 import { sizeLimitMiddleware } from './middleware/size-limit.js';
+import type { RateLimiter } from './quota/rate-limiter.js';
+import type { SpendTracker } from './quota/spend-cap.js';
 import { healthRouter } from './routes/health.js';
 import { messagesRouter } from './routes/messages.js';
 import { openapiRouter } from './routes/openapi.js';
@@ -32,10 +35,14 @@ export interface AppDeps {
   vault: TokenVault;
   engine: EngineClient;
   anthropic: AnthropicMessagesClient;
+  /** Real Anthropic SDK instance — used by the streaming branch. */
+  anthropicSdk?: Anthropic;
   logger: Logger;
   maxRequestBytes: number;
   sessionTtlMinutes: number;
   engineUrl?: string;
+  rateLimiter?: RateLimiter;
+  spendTracker?: SpendTracker;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -69,6 +76,9 @@ export function createApp(deps: AppDeps): Express {
       sessions: deps.sessions,
       apiKeys: deps.apiKeys,
       defaultSessionTtlMinutes: deps.sessionTtlMinutes,
+      ...(deps.anthropicSdk !== undefined ? { anthropicSdk: deps.anthropicSdk } : {}),
+      ...(deps.rateLimiter !== undefined ? { rateLimiter: deps.rateLimiter } : {}),
+      ...(deps.spendTracker !== undefined ? { spendTracker: deps.spendTracker } : {}),
     }),
   );
   v1.use(sessionsRouter({ sessions: deps.sessions, defaultTtlMinutes: deps.sessionTtlMinutes }));
