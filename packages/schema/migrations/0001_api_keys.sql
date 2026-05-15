@@ -1,8 +1,4 @@
 -- vs_api_keys — Phase 7. Gateway credentials.
--- key_hash is SHA-256(full_key); the cleartext is shown to the operator
--- exactly once at issuance.
-
-BEGIN;
 
 CREATE TABLE vs_api_keys (
     key_hash      BYTEA PRIMARY KEY,
@@ -13,8 +9,8 @@ CREATE TABLE vs_api_keys (
     last_used_at  TIMESTAMPTZ,
     revoked_at    TIMESTAMPTZ
 );
+--> statement-breakpoint
 
 CREATE INDEX vs_api_keys_tenant_idx ON vs_api_keys(tenant_id);
+--> statement-breakpoint
 CREATE INDEX vs_api_keys_app_idx    ON vs_api_keys(app_id);
-
-COMMIT;
