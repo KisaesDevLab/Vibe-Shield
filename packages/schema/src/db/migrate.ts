@@ -1,20 +1,24 @@
 /**
- * Programmatic migration runner.
+ * Migration runner — Drizzle's official ``migrate`` against
+ * ``drizzle-orm/postgres-js/migrator``.
  *
- * Applies every ``NNNN_*.sql`` file under ``migrations/`` in lexical
- * order, skipping ``*.down.sql`` companions. Used by tests for setup
- * and by the appliance bootstrap (Phase 21).
+ * Drizzle reads ``migrations/meta/_journal.json`` to know which SQL
+ * files to apply (in order, by ``idx``). Each .sql file is split on
+ * ``--> statement-breakpoint`` markers and each statement runs in its
+ * own transaction. Already-applied migrations are tracked in a
+ * ``__drizzle_migrations`` table that Drizzle creates in a ``drizzle``
+ * schema — that gives us idempotent ``runMigrations`` against a
+ * partially-migrated DB, which the v1.0 hand-rolled runner did not.
  *
- * Each up-migration runs in its own transaction (defined inside the SQL
- * file via BEGIN/COMMIT). We don't yet maintain a ``schema_migrations``
- * table — Phase 7+ will add one when we ship the first non-baseline
- * migration. For now, callers should run against an empty database or
- * against one that already matches the schema.
+ * For tests we expose a ``fresh`` mode that drops every ``vs_*``
+ * object plus the ``drizzle`` schema, then re-applies. Test-only —
+ * production deployments never call ``fresh``.
  */
 
-import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { migrate as drizzleMigrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import type { DatabaseHandle } from './index.js';
 
@@ -32,36 +36,28 @@ export interface MigrateOptions {
 export async function runMigrations(
   handle: DatabaseHandle,
   options: MigrateOptions = {},
-): Promise<{ applied: string[] }> {
+): Promise<void> {
   const dir = options.migrationsDir ?? DEFAULT_MIGRATIONS_DIR;
   if (options.fresh === true) {
     await dropAllVibeShieldObjects(handle);
   }
-  const entries = await readdir(dir);
-  const upFiles = entries
-    .filter((name) => name.endsWith('.sql') && !name.endsWith('.down.sql'))
-    .sort();
-  const applied: string[] = [];
-  // postgres-js refuses to run multi-statement SQL containing BEGIN/COMMIT
-  // through a pooled client (it can't pin the transaction to one socket).
-  // Open a dedicated single-connection client off the handle's URL.
-  const migrationClient = postgres(handle.url, { max: 1, idle_timeout: 5 });
+  // Drizzle's migrator pins itself to a single connection; that
+  // satisfies postgres-js's UNSAFE_TRANSACTION constraint without our
+  // own juggling.
+  const client = postgres(handle.url, { max: 1, idle_timeout: 5 });
   try {
-    for (const name of upFiles) {
-      const sql = await readFile(join(dir, name), 'utf8');
-      await migrationClient.unsafe(sql);
-      applied.push(name);
-    }
+    const db = drizzle(client);
+    await drizzleMigrate(db, { migrationsFolder: dir });
   } finally {
-    await migrationClient.end({ timeout: 5 });
+    await client.end({ timeout: 5 });
   }
-  return { applied };
 }
 
 /**
- * Drop every Vibe-Shield-prefixed table + helper function in the current
+ * Drop every Vibe-Shield-prefixed table plus Drizzle's tracking
  * schema. Used between integration test runs to start clean. Confined
- * to ``vs_*`` so it cannot accidentally wipe an unrelated database.
+ * to ``vs_*`` and the ``drizzle`` schema so it cannot accidentally
+ * wipe an unrelated database.
  */
 export async function dropAllVibeShieldObjects(handle: DatabaseHandle): Promise<void> {
   await handle.client.unsafe(`
@@ -75,6 +71,7 @@ export async function dropAllVibeShieldObjects(handle: DatabaseHandle): Promise<
       FOR r IN SELECT proname FROM pg_proc WHERE pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema()) AND proname LIKE 'vs_%' LOOP
         EXECUTE format('DROP FUNCTION IF EXISTS %I() CASCADE', r.proname);
       END LOOP;
+      EXECUTE 'DROP SCHEMA IF EXISTS drizzle CASCADE';
     END
     $$;
   `);

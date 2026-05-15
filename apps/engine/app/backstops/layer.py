@@ -79,17 +79,26 @@ class BackstopLayer:
         Side effect: every catch that doesn't overlap an existing span is
         a miss and gets sent to ``miss_handler``.
         """
+        spans, _misses = self.apply_with_misses(text, existing_spans)
+        return spans
+
+    def apply_with_misses(
+        self,
+        text: str,
+        existing_spans: list[EntitySpan],
+    ) -> tuple[list[EntitySpan], list[BackstopMiss]]:
+        """Same as ``apply`` but also returns the misses for the
+        caller (in addition to invoking ``miss_handler`` for the
+        log/metric path). Used by the /redact route so the gateway can
+        persist misses to ``vs_recognizer_misses``."""
         new_spans: list[EntitySpan] = []
+        misses: list[BackstopMiss] = []
         for bs in self.backstops:
             for hit in bs.find(text):
                 if any(_overlaps(hit, sp) for sp in existing_spans):
                     continue
                 if any(_overlaps(hit, sp) for sp in new_spans):
                     continue
-                # The backstop's regex matches the *raw* cleartext. We
-                # convert the hit to a span without preserving the
-                # cleartext anywhere — the tokenizer later reads it from
-                # the original text by index.
                 span = EntitySpan(
                     entity_type=hit.entity_type,
                     start=hit.start,
@@ -97,14 +106,14 @@ class BackstopLayer:
                     score=1.0,
                 )
                 new_spans.append(span)
-                self.miss_handler(
-                    BackstopMiss(
-                        entity_type=hit.entity_type,
-                        backstop_name=hit.backstop_name,
-                        severity=hit.severity,
-                        sample_hash=_hash_sample(text[hit.start : hit.end]),
-                        span_start=hit.start,
-                        span_end=hit.end,
-                    )
+                miss = BackstopMiss(
+                    entity_type=hit.entity_type,
+                    backstop_name=hit.backstop_name,
+                    severity=hit.severity,
+                    sample_hash=_hash_sample(text[hit.start : hit.end]),
+                    span_start=hit.start,
+                    span_end=hit.end,
                 )
-        return [*existing_spans, *new_spans]
+                misses.append(miss)
+                self.miss_handler(miss)
+        return [*existing_spans, *new_spans], misses

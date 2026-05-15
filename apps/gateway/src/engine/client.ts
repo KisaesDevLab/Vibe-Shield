@@ -39,10 +39,22 @@ export interface EngineTokenEntry {
   cleartext: string;
 }
 
+export interface EngineMissEntry {
+  entity_type: string;
+  backstop_name: string;
+  severity: string;
+  sample_hash: string;
+  span_start: number;
+  span_end: number;
+}
+
 export interface RedactResponse {
   redacted_text: string;
   spans: EngineSpan[];
   tokens: EngineTokenEntry[];
+  /** Backstop catches Presidio missed; v1.0.1+. Optional for
+   *  backward compatibility with pre-1.0.1 engine builds. */
+  misses?: EngineMissEntry[];
 }
 
 export interface AnalyzeResponse {

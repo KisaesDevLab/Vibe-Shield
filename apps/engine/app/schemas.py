@@ -34,10 +34,25 @@ class TokenMapEntry(BaseModel):
     cleartext: str
 
 
+class RecognizerMissEntry(BaseModel):
+    """A backstop catch Presidio missed. Carries no cleartext — only
+    entity_type, the backstop name, severity, a SHA-256-truncated
+    sample hash, and the span offsets. v1.0.1 routes these to
+    ``vs_recognizer_misses`` via the gateway."""
+
+    entity_type: str
+    backstop_name: str
+    severity: str
+    sample_hash: str
+    span_start: int
+    span_end: int
+
+
 class RedactResponse(BaseModel):
     redacted_text: str
     spans: list[EntitySpanModel]
     tokens: list[TokenMapEntry]
+    misses: list[RecognizerMissEntry] = []
 
 
 class HealthResponse(BaseModel):

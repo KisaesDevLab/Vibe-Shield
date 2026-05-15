@@ -11,7 +11,10 @@ raises and the FastAPI lifespan handler refuses to start the app.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from app.backstops.base import BackstopMiss
 
 from presidio_analyzer import AnalyzerEngine, RecognizerResult
 from presidio_analyzer.nlp_engine import NlpEngineProvider
@@ -130,12 +133,51 @@ class AnalyzerService:
             raise EngineUnavailable("whitelist failed") from exc
 
         try:
-            return self._backstop_layer.apply(text, kept)
+            spans_with_backstops, _misses = self._backstop_layer.apply_with_misses(text, kept)
+            return spans_with_backstops
         except Exception as exc:
             logger.error(
                 "backstop_failed",
                 extra={"error_class": type(exc).__name__},
             )
+            raise EngineUnavailable("backstop failed") from exc
+
+    def analyze_with_misses(
+        self,
+        text: str,
+        language: str | None = None,
+        entities: list[str] | None = None,
+    ) -> tuple[list[EntitySpan], list[BackstopMiss]]:
+        """Same as ``analyze`` but also returns the list of
+        ``BackstopMiss`` events for the request. Used by the /redact
+        route to surface misses in the response so the gateway can
+        persist them to ``vs_recognizer_misses``.
+
+        Returns ``(spans, misses)``. ``misses`` is empty unless
+        backstops caught something Presidio missed.
+        """
+        from app.errors import EngineUnavailable
+        from app.recognizers.whitelists import apply_whitelists
+
+        try:
+            results = self.engine.analyze(
+                text=text,
+                language=language or self.language,
+                entities=entities,
+            )
+            spans = [EntitySpan.from_presidio(r) for r in results]
+        except Exception as exc:
+            logger.error("presidio_analyze_failed", extra={"error_class": type(exc).__name__})
+            raise EngineUnavailable("presidio analysis failed") from exc
+        try:
+            kept = apply_whitelists(text, spans)
+        except Exception as exc:
+            logger.error("whitelist_failed", extra={"error_class": type(exc).__name__})
+            raise EngineUnavailable("whitelist failed") from exc
+        try:
+            return self._backstop_layer.apply_with_misses(text, kept)
+        except Exception as exc:
+            logger.error("backstop_failed", extra={"error_class": type(exc).__name__})
             raise EngineUnavailable("backstop failed") from exc
 
     def list_recognizers(self) -> list[RecognizerInfoDict]:

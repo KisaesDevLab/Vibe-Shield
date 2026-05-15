@@ -1,3 +1,0 @@
-BEGIN;
-DROP TABLE IF EXISTS vs_api_keys;
-COMMIT;

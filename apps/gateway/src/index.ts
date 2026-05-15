@@ -17,6 +17,7 @@ import { Redis } from 'ioredis';
 import {
   ApiKeyStore,
   AuditLogger,
+  RecognizerMissStore,
   SessionManager,
   TokenVault,
   createDatabase,
@@ -76,6 +77,7 @@ async function main(): Promise<void> {
   await policies.ensureLoaded();
 
   const audit = new AuditLogger(dbHandle.db);
+  const recognizerMisses = new RecognizerMissStore(dbHandle.db);
 
   const app = createApp({
     db: dbHandle.db,
@@ -90,6 +92,7 @@ async function main(): Promise<void> {
     policies,
     zdrEnabled: config.ZDR_ENABLED,
     audit,
+    recognizerMisses,
     logger,
     maxRequestBytes: config.MAX_REQUEST_BYTES,
     sessionTtlMinutes: config.SESSION_TTL_MINUTES,

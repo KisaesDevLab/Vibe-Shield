@@ -15,8 +15,7 @@ FROM python:${PYTHON_VERSION} AS builder
 ARG SPACY_MODEL
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_LINK_MODE=copy \
-    UV_PROJECT_ENVIRONMENT=/opt/venv
+    UV_LINK_MODE=copy
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -29,14 +28,13 @@ RUN apt-get update \
 COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /usr/local/bin/uv
 
 WORKDIR /build
-COPY pyproject.toml ./
-# uv sync requires a lockfile or --no-lock. Phase 2 ships without a lock
-# (deps are pinned in pyproject); generate one in CI when wired.
-RUN uv venv /opt/venv \
-    && uv pip install --python /opt/venv/bin/python -r <(uv pip compile pyproject.toml)
+COPY pyproject.toml uv.lock ./
+# Use the committed uv.lock for reproducibility. --no-dev keeps test
+# deps (pytest, mypy, ruff) out of the runtime image.
+RUN uv sync --frozen --no-dev
 
-# Download the configured spaCy model into the venv's site-packages.
-RUN /opt/venv/bin/python -m spacy download ${SPACY_MODEL}
+# Download the production spaCy model into the synced env.
+RUN uv run --no-dev --with pip python -m spacy download ${SPACY_MODEL}
 
 # ---- Stage 2: runtime ----
 FROM python:${PYTHON_VERSION} AS runtime
@@ -53,7 +51,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN groupadd --system vibe \
     && useradd --system --gid vibe --home /app --shell /usr/sbin/nologin vibe
 
-COPY --from=builder /opt/venv /opt/venv
+# uv sync writes the venv at /build/.venv by default; copy that.
+COPY --from=builder /build/.venv /opt/venv
 
 WORKDIR /app
 COPY --chown=vibe:vibe app ./app

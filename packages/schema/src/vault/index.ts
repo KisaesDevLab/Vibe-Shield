@@ -30,3 +30,6 @@ export type {
 
 export { AuditLogger } from './audit-logger.js';
 export type { AuditEntry, AuditEventType } from './audit-logger.js';
+
+export { RecognizerMissStore } from './recognizer-miss-store.js';
+export type { RecognizerMissInput } from './recognizer-miss-store.js';

@@ -12,6 +12,7 @@ import { Router } from 'express';
 import type {
   ApiKeyStore,
   AuditLogger,
+  RecognizerMissStore,
   SessionManager,
   TokenVault,
 } from '@kisaesdevlab/vibe-shield-schema';
@@ -40,6 +41,7 @@ export interface MessagesDeps {
   policies?: PolicyResolver;
   zdrEnabled?: boolean;
   audit?: AuditLogger;
+  recognizerMisses?: RecognizerMissStore;
 }
 
 export function messagesRouter(deps: MessagesDeps): Router {
@@ -56,6 +58,7 @@ export function messagesRouter(deps: MessagesDeps): Router {
     ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
     ...(deps.zdrEnabled !== undefined ? { zdrEnabled: deps.zdrEnabled } : {}),
     ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
+    ...(deps.recognizerMisses !== undefined ? { recognizerMisses: deps.recognizerMisses } : {}),
   });
 
   router.post('/v1/messages', (req, res, next) => {

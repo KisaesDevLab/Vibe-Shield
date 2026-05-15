@@ -1,0 +1,113 @@
+{
+  "generated_at": "2026-05-15T21:21:54.614972+00:00",
+  "spacy_model": "en_core_web_lg",
+  "fixture_count": 34,
+  "scores": {
+    "BUSINESS_NAME": {
+      "entity_type": "BUSINESS_NAME",
+      "expected_count": 11,
+      "detected_count": 11,
+      "true_positives": 11,
+      "false_negatives": 0,
+      "false_positives": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "f1": 1.0
+    },
+    "EMAIL_ADDRESS": {
+      "entity_type": "EMAIL_ADDRESS",
+      "expected_count": 11,
+      "detected_count": 11,
+      "true_positives": 11,
+      "false_negatives": 0,
+      "false_positives": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "f1": 1.0
+    },
+    "PERSON": {
+      "entity_type": "PERSON",
+      "expected_count": 24,
+      "detected_count": 25,
+      "true_positives": 24,
+      "false_negatives": 0,
+      "false_positives": 1,
+      "recall": 1.0,
+      "precision": 0.96,
+      "f1": 0.9795918367346939
+    },
+    "PHONE_NUMBER": {
+      "entity_type": "PHONE_NUMBER",
+      "expected_count": 10,
+      "detected_count": 13,
+      "true_positives": 10,
+      "false_negatives": 0,
+      "false_positives": 3,
+      "recall": 1.0,
+      "precision": 0.7692307692307693,
+      "f1": 0.8695652173913044
+    },
+    "US_BANK_ACCOUNT": {
+      "entity_type": "US_BANK_ACCOUNT",
+      "expected_count": 5,
+      "detected_count": 11,
+      "true_positives": 5,
+      "false_negatives": 0,
+      "false_positives": 6,
+      "recall": 1.0,
+      "precision": 0.45454545454545453,
+      "f1": 0.625
+    },
+    "US_BANK_ROUTING": {
+      "entity_type": "US_BANK_ROUTING",
+      "expected_count": 6,
+      "detected_count": 6,
+      "true_positives": 6,
+      "false_negatives": 0,
+      "false_positives": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "f1": 1.0
+    },
+    "US_EIN": {
+      "entity_type": "US_EIN",
+      "expected_count": 11,
+      "detected_count": 11,
+      "true_positives": 11,
+      "false_negatives": 0,
+      "false_positives": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "f1": 1.0
+    },
+    "US_SSN": {
+      "entity_type": "US_SSN",
+      "expected_count": 9,
+      "detected_count": 9,
+      "true_positives": 9,
+      "false_negatives": 0,
+      "false_positives": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "f1": 1.0
+    }
+  },
+  "thresholds": {
+    "recall": {
+      "US_SSN": 0.99,
+      "US_EIN": 0.99,
+      "US_BANK_ROUTING": 0.99,
+      "US_BANK_ACCOUNT": 0.95,
+      "PERSON": 0.95,
+      "LOCATION": 0.95,
+      "EMAIL_ADDRESS": 0.95,
+      "PHONE_NUMBER": 0.95,
+      "BUSINESS_NAME": 0.85
+    },
+    "precision_floor": 0.9,
+    "precision_exempt": [
+      "PHONE_NUMBER",
+      "US_BANK_ACCOUNT"
+    ]
+  }
+}

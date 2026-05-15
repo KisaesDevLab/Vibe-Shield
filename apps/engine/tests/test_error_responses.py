@@ -93,6 +93,9 @@ def test_500_does_not_leak_input_when_internal_error(
         def analyze(self, text: str, language: str | None = None, entities: list[str] | None = None):  # type: ignore[no-untyped-def, override]
             raise RuntimeError(f"poison: {text}")
 
+        def analyze_with_misses(self, text: str, language: str | None = None, entities: list[str] | None = None):  # type: ignore[no-untyped-def, override]
+            raise RuntimeError(f"poison: {text}")
+
     poisoned = _PoisonAnalyzer(spacy_model=settings.spacy_model, language=settings.default_language)
     if analyzer.is_loaded:
         poisoned._engine = analyzer.engine  # share engine to skip reload
@@ -113,6 +116,9 @@ def test_503_when_pipeline_raises_engine_unavailable(
 
     class _UnavailableAnalyzer(AnalyzerService):
         def analyze(self, text: str, language: str | None = None, entities: list[str] | None = None):  # type: ignore[no-untyped-def, override]
+            raise EngineUnavailable(f"redaction failed on: {text}")
+
+        def analyze_with_misses(self, text: str, language: str | None = None, entities: list[str] | None = None):  # type: ignore[no-untyped-def, override]
             raise EngineUnavailable(f"redaction failed on: {text}")
 
     svc = _UnavailableAnalyzer(spacy_model=settings.spacy_model, language=settings.default_language)

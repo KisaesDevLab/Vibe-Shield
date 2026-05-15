@@ -21,8 +21,11 @@
  * effectively free JSON — we walk it generically.
  */
 
-import type { TokenVault } from '@kisaesdevlab/vibe-shield-schema';
-import type { EngineClient } from '../engine/client.js';
+import type {
+  RecognizerMissInput,
+  TokenVault,
+} from '@kisaesdevlab/vibe-shield-schema';
+import type { EngineClient, EngineMissEntry } from '../engine/client.js';
 import type { MessagesRequest } from '../schemas/messages.js';
 
 const TEXT_ENTITY = 'TEXT' as const;
@@ -31,6 +34,8 @@ export interface RedactedRequest {
   request: MessagesRequest;
   /** Every cleartext → token mapping allocated for this request. */
   allocations: Array<{ token: string; cleartext: string; entity_type: string }>;
+  /** Backstop misses surfaced by the engine. Caller persists to vs_recognizer_misses. */
+  misses: RecognizerMissInput[];
 }
 
 export interface RedactorDeps {
@@ -49,12 +54,18 @@ export async function redactRequest(
   deps: RedactorDeps,
 ): Promise<RedactedRequest> {
   const allocations: RedactedRequest['allocations'] = [];
+  const misses: RecognizerMissInput[] = [];
 
   const redactString = async (text: string): Promise<string> => {
     if (text.length === 0) {
       return text;
     }
     const result = await deps.engine.redact(text, deps.correlationId);
+    if (result.misses !== undefined) {
+      for (const m of result.misses) {
+        misses.push(toMissInput(m));
+      }
+    }
     if (result.tokens.length === 0) {
       return result.redacted_text;
     }
@@ -147,7 +158,15 @@ export async function redactRequest(
     }
   }
 
-  return { request: cloned, allocations };
+  return { request: cloned, allocations, misses };
+}
+
+function toMissInput(m: EngineMissEntry): RecognizerMissInput {
+  return {
+    pattern: m.backstop_name,
+    sampleHash: m.sample_hash,
+    severity: m.severity,
+  };
 }
 
 export { TEXT_ENTITY };
