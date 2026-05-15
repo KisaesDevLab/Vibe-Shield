@@ -1,0 +1,30 @@
+{
+  "name": "@kisaesdevlab/vibe-shield-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Drop-in replacement for @anthropic-ai/sdk that routes every Messages API call through the Vibe Shield gateway.",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
