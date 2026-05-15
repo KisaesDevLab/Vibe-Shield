@@ -73,3 +73,6 @@ ops/local/
 # --- Build artifacts that should never be checked in ---
 *.tgz
 *.zip
+
+# Autonomous-build tracking (local-only working notes)
+.shield-build/
