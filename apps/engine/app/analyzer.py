@@ -68,7 +68,21 @@ class AnalyzerService:
             }
         )
         nlp_engine = provider.create_engine()
-        self._engine = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=[self.language])
+        # default_score_threshold=0.4 drops low-confidence pattern matches
+        # (e.g., bare 4-17 digit runs that look like bank accounts) unless
+        # the context-enhancement layer boosts them above 0.4. This is what
+        # makes context-required recognizers (US_BANK_ACCOUNT, US_DOB) safe.
+        engine = AnalyzerEngine(
+            nlp_engine=nlp_engine,
+            supported_languages=[self.language],
+            default_score_threshold=0.4,
+        )
+        # Imported here to avoid a circular import (recognizers depends on
+        # this module via the EntitySpan reexport pattern).
+        from app.recognizers import register_custom_recognizers
+
+        register_custom_recognizers(engine)
+        self._engine = engine
         logger.info("analyzer loaded", extra={"model": self.spacy_model})
 
     def analyze(
@@ -82,7 +96,12 @@ class AnalyzerService:
             language=language or self.language,
             entities=entities,
         )
-        return [EntitySpan.from_presidio(r) for r in results]
+        spans = [EntitySpan.from_presidio(r) for r in results]
+        # Imported here to avoid the circular: whitelists imports EntitySpan
+        # from this module.
+        from app.recognizers.whitelists import apply_whitelists
+
+        return apply_whitelists(text, spans)
 
     def list_recognizers(self) -> list[RecognizerInfoDict]:
         # Presidio's Recognizer doesn't ship type stubs — the attribute reads
