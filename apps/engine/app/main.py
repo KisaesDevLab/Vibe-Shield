@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -9,6 +10,7 @@ from app import __version__
 from app.analyzer import AnalyzerService
 from app.config import Settings, load_settings
 from app.errors import install_error_handlers
+from app.image import ImageRedactor
 from app.logging import configure_logging, get_logger
 from app.metrics import ENTITIES_DETECTED, metrics_asgi_app
 from app.middleware import (
@@ -21,10 +23,13 @@ from app.schemas import (
     AnalyzeResponse,
     EntitySpanModel,
     HealthResponse,
+    MaskedRegionModel,
     RecognizerInfo,
     RecognizersResponse,
+    RedactImageResponse,
     RedactRequest,
     RedactResponse,
+    TokenAllocationModel,
     TokenMapEntry,
 )
 from app.tokenizer import RequestTokenizer
@@ -119,6 +124,48 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
             redacted_text=redacted,
             spans=[EntitySpanModel(**s.__dict__) for s in spans],
             tokens=[TokenMapEntry(**a.__dict__) for a in allocations],
+        )
+
+    @app.post("/redact-image", response_model=RedactImageResponse)
+    def redact_image(
+        body: dict[str, object],
+        a: AnalyzerService = Depends(get_analyzer),
+    ) -> RedactImageResponse:
+        """Phase 17 image-redaction endpoint (slim v1.0).
+
+        Accepts ``{"image_base64": <b64>}``, runs the stub OCR backend
+        through the standard text pipeline, returns the masked image
+        (currently identity-masker until v1.1 wires OpenCV) plus the
+        token map and bbox audit. The API contract is stable — the
+        Converter integrates against this shape today; v1.1 swaps the
+        backend internals.
+        """
+        b64 = body.get("image_base64", "")
+        if not isinstance(b64, str) or not b64:
+            raise ValueError("image_base64 is required")
+        image_bytes = base64.b64decode(b64)
+        redactor = ImageRedactor(a)
+        result = redactor.redact(image_bytes)
+        return RedactImageResponse(
+            image_sha256=result.image_sha256,
+            masked_image_sha256=result.masked_image_sha256,
+            masked_image_base64=base64.b64encode(result.masked_image_bytes).decode("ascii"),
+            redacted_text=result.redacted_text,
+            tokens=[
+                TokenAllocationModel(token=t, entity_type=et, cleartext=ct)
+                for (t, et, ct) in result.tokens
+            ],
+            masked_regions=[
+                MaskedRegionModel(
+                    entity_type=r.entity_type,
+                    token=r.token,
+                    x=r.x,
+                    y=r.y,
+                    width=r.width,
+                    height=r.height,
+                )
+                for r in result.masked_regions
+            ],
         )
 
     return app

@@ -58,3 +58,31 @@ class RecognizerInfo(BaseModel):
 class RecognizersResponse(BaseModel):
     model: str
     recognizers: list[RecognizerInfo]
+
+
+class MaskedRegionModel(BaseModel):
+    entity_type: str
+    token: str
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+class TokenAllocationModel(BaseModel):
+    token: str
+    entity_type: str
+    cleartext: str
+
+
+class RedactImageResponse(BaseModel):
+    """Image-redaction endpoint response. The masked image is returned
+    base64-encoded so the API stays JSON-shaped (Phase 17 — slim
+    v1.0; v1.1 will add a multipart variant)."""
+
+    image_sha256: str
+    masked_image_sha256: str
+    masked_image_base64: str
+    redacted_text: str
+    tokens: list[TokenAllocationModel]
+    masked_regions: list[MaskedRegionModel]
