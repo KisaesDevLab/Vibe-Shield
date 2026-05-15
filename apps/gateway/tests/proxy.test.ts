@@ -145,7 +145,9 @@ describe.skipIf(!integrationEnabled)('POST /v1/messages — end-to-end proxy', (
     expect(r.status).toBe(401);
   });
 
-  it('returns 501 for stream=true (Phase 8b)', async () => {
+  it('returns 501 for stream=true when no anthropicSdk wired', async () => {
+    // Test app intentionally omits anthropicSdk; streaming requires
+    // the real SDK because we need its typed stream() method.
     const r = await request(app)
       .post('/v1/messages')
       .set('Authorization', `Bearer ${key}`)
@@ -156,7 +158,7 @@ describe.skipIf(!integrationEnabled)('POST /v1/messages — end-to-end proxy', (
         messages: [{ role: 'user', content: 'hi' }],
       });
     expect(r.status).toBe(501);
-    expect(r.body.error.message).toContain('Phase 8b');
+    expect(r.body.error.message).toContain('streaming not configured');
   });
 });
 

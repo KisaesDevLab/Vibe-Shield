@@ -4,6 +4,21 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — Phase 8b: streaming, retry, rate limiting, spend caps
+
+Closes Phase 8. Five things:
+
+- **SSE streaming** (`apps/gateway/src/proxy/streaming.ts`). When the request carries `stream: true`, we open a streaming call to Anthropic, buffer trailing characters per content block until the next safe flush boundary (we hold from `<` until the matching `>` arrives so a token straddling two `text_delta` events isn't emitted half-resolved), re-identify on the fly, and forward as SSE to the client. Non-text events (`message_start`, `content_block_start`, etc.) pass through verbatim.
+- **Retry/backoff** (`src/proxy/retry.ts`). Exponential backoff with full jitter. Retries Anthropic 429 + 5xx; never retries 4xx (request-side error) or our own redaction/vault errors. Default 3 attempts, 250 ms base, 8 s ceiling.
+- **Per-tenant rate limit** (`src/quota/rate-limiter.ts`). Redis-backed fixed-window counter, default 60 req/min per (tenant, app). Configurable. Breach → 429 with Anthropic-shaped `rate_limit_error` envelope and `retryAfterSeconds`.
+- **Per-tenant monthly spend cap** (`src/quota/spend-cap.ts`, new `vs_spend_records` table + migration `0003_spend_records.sql`). Records token counts + micro-dollar cost per Anthropic call. Pre-flight cap check → `SpendCapExceededError` → 403 `permission_error`. PRICING table snapshots Sonnet 4.6 / Opus 4.7 / Haiku 4.5 list prices; conservative fallback for unknown models. Default cap $500/month.
+- **`vs-session-id` response header** echoes the session used by every `/v1/messages` call so clients can reuse it.
+
+Config gained `REDIS_URL`, `RATE_LIMIT_PER_MINUTE`, `SPEND_CAP_MICRODOLLARS`. Gateway tests grew 36 → 56 (+20):
+- **rate-limiter (6)** — under cap / at cap / tenant isolation / app isolation / per-call override / Retry-After hint shape
+- **spend-cap (8)** — exact cost computation per Sonnet input/output, fallback price, integration record+read, cap breach, fresh tenant passes, tenant isolation, PRICING coverage
+- **retry (6)** — first success / 5xx eventual / 429 retried / 4xx not retried / max attempts / unstatused errors not retried
+
 ### Added — Phase 8 (part 1): Anthropic Claude API proxy — non-streaming
 
 Core end-to-end redaction pipeline live: `POST /v1/messages` accepts an Anthropic Messages API request, redacts every cleartext field through the Python engine, persists tokens in the per-session vault, calls Anthropic with the redacted payload, and re-identifies tokens in the response before returning to the client. The 501 from Phase 7 is gone.

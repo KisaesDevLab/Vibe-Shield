@@ -1,0 +1,3 @@
+BEGIN;
+DROP TABLE IF EXISTS vs_spend_records;
+COMMIT;

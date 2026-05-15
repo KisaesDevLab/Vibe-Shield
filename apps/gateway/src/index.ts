@@ -8,9 +8,12 @@
  *   3. Anthropic key must pass the commercial-key probe.
  *   4. DB must accept the connection (lazy — the first /ready or
  *      first request fails if it doesn't).
+ *   5. Redis must accept the connection (lazy — first quota check).
  * Any of 1-3 raises and the process exits before listening.
  */
 
+import Anthropic from '@anthropic-ai/sdk';
+import { Redis } from 'ioredis';
 import {
   ApiKeyStore,
   SessionManager,
@@ -24,19 +27,17 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { EngineClient } from './engine/client.js';
 import { createLogger } from './logging.js';
+import { RateLimiter } from './quota/rate-limiter.js';
+import { SpendTracker } from './quota/spend-cap.js';
 import { PerTenantKeyResolver } from './tenant-key/resolver.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger(config.LOG_LEVEL);
 
-  // Fail-closed: verify the KEK is loadable before we accept traffic.
   const kek = loadKek();
   logger.info({ kek_status: 'loaded' }, 'kek loaded');
 
-  // Anthropic client + commercial-key probe. The probe hits Anthropic
-  // directly via fetch so it isn't coupled to a specific SDK version
-  // surface.
   const probe = await probeAnthropicKey({ apiKey: config.ANTHROPIC_API_KEY });
   logger.info(
     { models_visible: probe.models.length },
@@ -46,10 +47,11 @@ async function main(): Promise<void> {
     apiKey: config.ANTHROPIC_API_KEY,
     ...(config.ZDR_ENABLED ? { zdr: true } : {}),
   });
+  const anthropicSdk = new Anthropic({
+    apiKey: config.ANTHROPIC_API_KEY,
+    ...(config.ZDR_ENABLED ? { defaultHeaders: { 'anthropic-zdr': 'enabled' } } : {}),
+  });
 
-  // DB-backed services. TokenVault gets its DEKs from
-  // PerTenantKeyResolver, which is constructed per-process (cached
-  // DEKs are wiped on shutdown).
   const dbHandle = createDatabase(config.DATABASE_URL);
   const apiKeys = new ApiKeyStore(dbHandle.db);
   const sessions = new SessionManager(dbHandle.db);
@@ -58,6 +60,16 @@ async function main(): Promise<void> {
 
   const engine = new EngineClient({ baseUrl: config.ENGINE_URL });
 
+  const redis = new Redis(config.REDIS_URL, { lazyConnect: true });
+  const rateLimiter = new RateLimiter({
+    redis,
+    defaultLimit: config.RATE_LIMIT_PER_MINUTE,
+  });
+  const spendTracker = new SpendTracker({
+    db: dbHandle.db,
+    defaultCapMicrodollars: BigInt(config.SPEND_CAP_MICRODOLLARS),
+  });
+
   const app = createApp({
     db: dbHandle.db,
     apiKeys,
@@ -65,6 +77,9 @@ async function main(): Promise<void> {
     vault,
     engine,
     anthropic,
+    anthropicSdk,
+    rateLimiter,
+    spendTracker,
     logger,
     maxRequestBytes: config.MAX_REQUEST_BYTES,
     sessionTtlMinutes: config.SESSION_TTL_MINUTES,
@@ -82,9 +97,9 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'shutting down');
     server.close(() => {
       tenantKeys.clear();
+      void redis.quit().catch(() => undefined);
       void dbHandle.close().then(() => process.exit(0));
     });
-    // Hard floor so we don't hang forever.
     setTimeout(() => process.exit(1), 10_000).unref();
   };
   process.on('SIGINT', () => shutdown('SIGINT'));

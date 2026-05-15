@@ -30,6 +30,16 @@ const configSchema = z.object({
   MAX_REQUEST_BYTES: z.coerce.number().int().positive().default(1_048_576),
   /** Default session idle TTL in minutes. */
   SESSION_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+  /** Redis URL for rate-limit counters. */
+  REDIS_URL: z.string().default('redis://127.0.0.1:6379/0'),
+  /** Per-(tenant, app) request cap per minute. */
+  RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(60),
+  /** Per-tenant monthly spend cap in micro-dollars (USD * 1e6). */
+  SPEND_CAP_MICRODOLLARS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(500_000_000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 });
 
