@@ -9,7 +9,7 @@ SHELL := /bin/sh
 # Detect whether the engine workspace has been scaffolded yet (Phase 2).
 ENGINE_PRESENT := $(shell test -f apps/engine/pyproject.toml && echo 1 || echo 0)
 
-.PHONY: help dev down ps logs install lint typecheck test build verify clean
+.PHONY: help dev down ps logs install lint typecheck test build verify clean migrate rotate-kek-dry rotate-kek-apply
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -59,6 +59,15 @@ build: ## Production build for all workspaces
 
 verify: lint typecheck test ## Gate run after each phase (lint + typecheck + tests)
 	@echo "verify: ok"
+
+migrate: ## Run pending DB migrations (Drizzle)
+	pnpm --filter @kisaesdevlab/vibe-shield-schema migrate
+
+rotate-kek-dry: ## KEK rotation dry-run (env: OLD_VS_KEK NEW_VS_KEK DATABASE_URL)
+	pnpm --filter @kisaesdevlab/vibe-shield-schema rotate-kek -- --dry-run
+
+rotate-kek-apply: ## KEK rotation apply — only after a successful dry-run
+	pnpm --filter @kisaesdevlab/vibe-shield-schema rotate-kek -- --apply
 
 clean: ## Remove build artifacts (node_modules, dist, caches)
 	rm -rf node_modules apps/*/node_modules packages/*/node_modules
