@@ -14,9 +14,15 @@ Requires Node.js ≥ 24, pnpm ≥ 9, Python 3.12, [uv](https://docs.astral.sh/uv
 
 ```bash
 pnpm install
-make dev          # starts Postgres + Redis
+make dev          # starts Postgres (host :5436) + Redis (host :6379)
 make verify       # lint + typecheck + tests across all workspaces
+
+# Schema integration tests need DATABASE_URL — point at the dev Postgres:
+export DATABASE_URL="postgres://vibe:vibe@localhost:5436/vibe_shield"
+pnpm --filter @kisaesdevlab/vibe-shield-schema test
 ```
+
+Postgres is mapped to host port **5436** (not the default 5432) so it doesn't collide with system Postgres or other Vibe-stack databases. Override with `POSTGRES_PORT=…` if needed.
 
 App services come up once their phases land:
 

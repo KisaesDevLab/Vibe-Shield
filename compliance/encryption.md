@@ -62,6 +62,22 @@ This puts a structural ceiling on KEK lifetime: **rotate the KEK well before 2³
 
 DEKs rotate independently if a tenant has a documented incident; the procedure is in `compliance/incident-response-runbook.md` (Phase 22).
 
+## Dedup hash (`vs_token_index.hash`)
+
+The token vault deduplicates within a session: the same cleartext fed to `TokenVault.allocate()` twice in the same session returns the same token. The index column that powers this lookup is HMAC-SHA-256, keyed by the tenant's DEK:
+
+```
+hash = HMAC-SHA-256(dek, sessionId || ":vs:" || cleartext)
+```
+
+Three properties this gives:
+
+1. **Same cleartext, same session, same DEK → same hash.** This is what makes the index work.
+2. **Same cleartext, different session → different hash.** Cross-session correlation by hash equality is impossible — Anthropic cannot stitch sessions back together by spotting identical hashes, even if they had read access to `vs_token_index`.
+3. **Same cleartext, different tenant → different hash** (DEK differs per tenant). An attacker with read access to `vs_token_index` cannot stitch hashes across tenants either.
+
+Critically: an attacker with read-only access to `vs_token_index` and *no DEK* cannot precompute hashes for likely PII values (e.g., a rainbow table of common SSNs). Plain SHA-256 of cleartext would be vulnerable to that attack; HMAC keyed by the per-tenant DEK is not. The integration test suite verifies all three properties in `tests/integration/token-vault.test.ts`.
+
 ## Cleartext non-appearance
 
 These properties are tested in `packages/schema/tests/no-leak.test.ts`:

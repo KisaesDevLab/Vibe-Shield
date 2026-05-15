@@ -14,7 +14,11 @@ services:
       POSTGRES_PASSWORD: vibe
       POSTGRES_DB: vibe_shield
     ports:
-      - "5432:5432"
+      # Host 5436 → container 5432. 5432 is commonly held by other Postgres
+      # installs (system Postgres, MyBooks dev stack on 5434, WSL relays);
+      # 5436 keeps Vibe Shield isolated. Override via `POSTGRES_PORT` if
+      # needed.
+      - "${POSTGRES_PORT:-5436}:5432"
     volumes:
       - vs-pg:/var/lib/postgresql/data
     healthcheck:
@@ -59,6 +63,7 @@ services:
       engine:
         condition: service_started
     environment:
+      # Inside the compose network, use the service name + container port.
       DATABASE_URL: postgres://vibe:vibe@postgres:5432/vibe_shield
       REDIS_URL: redis://redis:6379/0
       ENGINE_URL: http://engine:8000
