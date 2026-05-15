@@ -76,3 +76,7 @@ ops/local/
 
 # Autonomous-build tracking (local-only working notes)
 .shield-build/
+
+# QA per-run reports — only the latest baseline is committed.
+qa/reports/local/
+
