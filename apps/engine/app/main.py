@@ -25,6 +25,7 @@ from app.schemas import (
     HealthResponse,
     MaskedRegionModel,
     RecognizerInfo,
+    RecognizerMissEntry,
     RecognizersResponse,
     RedactImageResponse,
     RedactRequest,
@@ -115,7 +116,9 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
         body: RedactRequest,
         a: AnalyzerService = Depends(get_analyzer),
     ) -> RedactResponse:
-        spans = a.analyze(body.text, language=body.language, entities=body.entities)
+        spans, misses = a.analyze_with_misses(
+            body.text, language=body.language, entities=body.entities
+        )
         for s in spans:
             ENTITIES_DETECTED.labels(entity_type=s.entity_type).inc()
         tokenizer = RequestTokenizer()
@@ -124,6 +127,17 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
             redacted_text=redacted,
             spans=[EntitySpanModel(**s.__dict__) for s in spans],
             tokens=[TokenMapEntry(**a.__dict__) for a in allocations],
+            misses=[
+                RecognizerMissEntry(
+                    entity_type=m.entity_type,
+                    backstop_name=m.backstop_name,
+                    severity=m.severity.value,
+                    sample_hash=m.sample_hash,
+                    span_start=m.span_start,
+                    span_end=m.span_end,
+                )
+                for m in misses
+            ],
         )
 
     @app.post("/redact-image", response_model=RedactImageResponse)

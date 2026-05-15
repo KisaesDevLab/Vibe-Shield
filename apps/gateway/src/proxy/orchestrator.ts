@@ -16,6 +16,7 @@ import type {
 import {
   type ApiKeyStore,
   type AuditLogger,
+  type RecognizerMissStore,
   type SessionManager,
   type TokenVault,
 } from '@kisaesdevlab/vibe-shield-schema';
@@ -68,6 +69,7 @@ export interface OrchestratorDeps {
    *  require ZDR refuse if this is false. */
   zdrEnabled?: boolean;
   audit?: AuditLogger;
+  recognizerMisses?: RecognizerMissStore;
 }
 
 export interface ProxyResult {
@@ -107,6 +109,16 @@ export class ProxyOrchestrator {
       throw new EngineUnavailableError(
         err instanceof Error ? `redaction failed: ${err.name}` : 'redaction failed',
       );
+    }
+
+    // 2a. Persist any backstop misses surfaced by the engine. Best-
+    // effort: a DB hiccup logs but doesn't fail the request.
+    if (this.deps.recognizerMisses !== undefined && redacted.misses.length > 0) {
+      try {
+        await this.deps.recognizerMisses.recordBatch(redacted.misses);
+      } catch {
+        // metric path will surface sustained failures
+      }
     }
 
     // 3. Call Anthropic with retry/backoff on transient failures.

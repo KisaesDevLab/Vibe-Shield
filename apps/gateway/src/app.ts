@@ -11,6 +11,7 @@ import type {
   ApiKeyStore,
   AuditLogger,
   Database,
+  RecognizerMissStore,
   SessionManager,
   TokenVault,
 } from '@kisaesdevlab/vibe-shield-schema';
@@ -50,6 +51,7 @@ export interface AppDeps {
   policies?: PolicyResolver;
   zdrEnabled?: boolean;
   audit?: AuditLogger;
+  recognizerMisses?: RecognizerMissStore;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -90,6 +92,7 @@ export function createApp(deps: AppDeps): Express {
       ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
       ...(deps.zdrEnabled !== undefined ? { zdrEnabled: deps.zdrEnabled } : {}),
       ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
+      ...(deps.recognizerMisses !== undefined ? { recognizerMisses: deps.recognizerMisses } : {}),
     }),
   );
   v1.use(sessionsRouter({ sessions: deps.sessions, defaultTtlMinutes: deps.sessionTtlMinutes }));
