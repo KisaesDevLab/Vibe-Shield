@@ -4,6 +4,27 @@ This file documents every recognizer that Vibe Shield adds on top of Presidio's 
 
 FP/FN columns are populated by the recall/precision harness (Phase 12). Until that lands, entries read **TBD — Phase 12**.
 
+## Backstop layer
+
+The backstop layer (`apps/engine/app/backstops/`) runs after Presidio + the whitelist. It's a deterministic regex/validation pass whose job is to **catch what NER missed**. A backstop hit that overlaps an existing span is a confirmation (not logged); a non-overlapping hit is a *miss* and gets escalated.
+
+| Backstop | Entity | Pattern + validation | Severity |
+|---|---|---|---|
+| `ssn_backstop` | `US_SSN` | `\b(?!000\|666\|9\d{2})\d{3}[-\s]?(?!00)\d{2}[-\s]?(?!0000)\d{4}\b` (SSA-reserved ranges excluded) | block |
+| `ein_backstop` | `US_EIN` | `\b\d{2}-\d{7}\b` + IRS valid-prefix list | block |
+| `routing_backstop` | `US_BANK_ROUTING` | `\b\d{9}\b` + ABA checksum (excludes degenerate `000000000`) | block |
+| `credit_card_backstop` | `CREDIT_CARD` | 13–19 digits with optional space/hyphen grouping + Luhn | block |
+| `email_backstop` | `EMAIL_ADDRESS` | Permissive RFC-ish `local@domain.tld` | block |
+| `phone_backstop` | `PHONE_NUMBER` | NANP variants (`(555) 555-5555`, dotted, dashed, bare) + E.164 (`+1…`) with optional `ext`/`x` | block |
+
+**Severity ladder.** `block` → urgent log; `warn` → daily digest; `allow` → sampled audit. All Phase 4 backstops default to `block`. Severity controls the *miss* escalation path only — detection of the PII itself always happens.
+
+**Miss logging.** `BackstopLayer.apply()` invokes a `MissHandler` callable for each non-overlapping hit. The default handler emits a structured log line with entity type, backstop name, severity, and a SHA-256-truncated `sample_hash` — never cleartext. Phase 5 wires this to the `vs_recognizer_misses` Postgres table.
+
+**Fail-closed posture.** Backstops run unconditionally. If a backstop module fails to import or its regex fails to compile, the engine refuses to load — there is no "graceful degradation" path that could ship un-redacted PII.
+
+---
+
 ## Whitelist post-processor
 
 After Presidio analysis, `app.recognizers.whitelists.apply_whitelists()` drops spans whose substring matches:

@@ -47,6 +47,11 @@ class AnalyzerService:
         self.spacy_model = spacy_model
         self.language = language
         self._engine: AnalyzerEngine | None = None
+        # Imported lazily in load() to defer the backstops package import
+        # until after the recognizers package finished registering.
+        from app.backstops import BackstopLayer
+
+        self._backstop_layer = BackstopLayer()
 
     @property
     def is_loaded(self) -> bool:
@@ -101,7 +106,8 @@ class AnalyzerService:
         # from this module.
         from app.recognizers.whitelists import apply_whitelists
 
-        return apply_whitelists(text, spans)
+        kept = apply_whitelists(text, spans)
+        return self._backstop_layer.apply(text, kept)
 
     def list_recognizers(self) -> list[RecognizerInfoDict]:
         # Presidio's Recognizer doesn't ship type stubs — the attribute reads

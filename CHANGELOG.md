@@ -4,6 +4,21 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — Phase 4: Regex backstop / deny-list layer
+
+- Six deterministic backstops under `apps/engine/app/backstops/`, all defaulting to `Severity.BLOCK`:
+  - `SsnBackstop` — SSA-range-excluded SSN regex per BUILD_PLAN §4 Phase 4.
+  - `EinBackstop` — `\b\d{2}-\d{7}\b` with IRS valid-prefix list (shared with the recognizer).
+  - `RoutingBackstop` — 9 digits + ABA checksum, explicitly rejects `000000000`.
+  - `CreditCardBackstop` — 13–19 digits with optional space/hyphen separators + Luhn.
+  - `EmailBackstop` — permissive RFC-ish.
+  - `PhoneBackstop` — NANP variants (parens, dots, dashes, spaces, bare 10-digit) and E.164 with optional extension.
+- `BackstopLayer` composes them, runs after Presidio + whitelist, and emits new spans only for hits that don't overlap an existing Presidio span. Each non-overlapping hit is a *miss*: handed to a `MissHandler` callable (default: structured log line with entity type, backstop name, severity, SHA-256-truncated `sample_hash` — never cleartext). Phase 5 plugs this into the `vs_recognizer_misses` Postgres table.
+- `Severity` enum (`block` / `warn` / `allow`) controls the miss-escalation path; detection happens regardless.
+- Wired into `AnalyzerService.analyze()` after the whitelist filter; the analyzer holds a single `BackstopLayer` instance per process.
+- Compliance docs (`compliance/recognizers.md`) updated with the backstop table, severity ladder, miss-logging behavior, and fail-closed posture statement.
+- Tests: 157 new cases in 7 files (`test_backstop_{ssn,ein,routing,credit_card,email,phone,layer}.py`). 20+ adversarial positive/negative cases per backstop. Layer-level integration covers overlap suppression, miss recording, hash determinism, and the full Presidio+layer pipeline. Full engine suite: 256 passing.
+
 ### Added — Phase 3: Custom CPA-domain recognizers
 
 - Seven Vibe-Shield-prefixed Presidio recognizers under `apps/engine/app/recognizers/`:
