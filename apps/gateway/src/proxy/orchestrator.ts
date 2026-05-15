@@ -27,6 +27,9 @@ import {
   PermissionError,
 } from '../errors.js';
 import type { AuthContext } from '../middleware/api-key.js';
+import { DEFAULT_POLICY } from '../policy/built-in.js';
+import type { PolicyResolver } from '../policy/resolver.js';
+import type { PolicyConfig } from '../policy/schema.js';
 import {
   RateLimitExceededError,
   type RateLimiter,
@@ -46,6 +49,10 @@ export interface OrchestratorDeps {
   defaultSessionTtlMinutes: number;
   rateLimiter?: RateLimiter;
   spendTracker?: SpendTracker;
+  policies?: PolicyResolver;
+  /** When the gateway is configured with ZDR. Policies that
+   *  require ZDR refuse if this is false. */
+  zdrEnabled?: boolean;
 }
 
 export interface ProxyResult {
@@ -61,8 +68,13 @@ export class ProxyOrchestrator {
     auth: AuthContext,
     correlationId: string | undefined,
   ): Promise<ProxyResult> {
-    // 0. Quotas before any I/O. Reject before we waste an engine call.
-    await this.checkQuotas(auth);
+    // 0a. Resolve the active policy. Apply request-level overrides if
+    //     specified; verify model is allowed; verify ZDR contract.
+    const policy = await this.resolvePolicy(request, auth);
+    this.assertPolicyAllowsRequest(policy, request);
+
+    // 0b. Quotas before any I/O.
+    await this.checkQuotas(auth, policy);
 
     // 1. Resolve / create session.
     const sessionId = await this.acquireSession(request, auth);
@@ -105,23 +117,27 @@ export class ProxyOrchestrator {
       });
     }
 
-    // 5. Re-identify tokens in the response.
+    // 5. Re-identify tokens in the response per the active policy.
     const reidentified = await reidentifyResponse(anthropicResponse, {
       vault: this.deps.vault,
       sessionId,
+      policy: policy.reid,
     });
 
     return { response: reidentified, sessionId };
   }
 
   /** Pre-flight quota checks. Throws on rate limit or spend cap breach. */
-  async checkQuotas(auth: AuthContext): Promise<void> {
+  async checkQuotas(auth: AuthContext, policy?: PolicyConfig): Promise<void> {
     if (this.deps.rateLimiter !== undefined) {
       try {
-        await this.deps.rateLimiter.check(auth.tenantId, auth.appId);
+        await this.deps.rateLimiter.check(
+          auth.tenantId,
+          auth.appId,
+          policy?.rate_limit_per_minute,
+        );
       } catch (err) {
         if (err instanceof RateLimitExceededError) {
-          // Anthropic-shaped rate-limit envelope.
           throw new RateLimitHttpError(err.limit, err.retryAfterSeconds);
         }
         throw err;
@@ -129,7 +145,12 @@ export class ProxyOrchestrator {
     }
     if (this.deps.spendTracker !== undefined) {
       try {
-        await this.deps.spendTracker.checkCap(auth.tenantId);
+        await this.deps.spendTracker.checkCap(
+          auth.tenantId,
+          policy?.spend_cap_microdollars !== undefined
+            ? BigInt(policy.spend_cap_microdollars)
+            : undefined,
+        );
       } catch (err) {
         if (err instanceof SpendCapExceededError) {
           throw new PermissionError(
@@ -138,6 +159,51 @@ export class ProxyOrchestrator {
         }
         throw err;
       }
+    }
+  }
+
+  async resolvePolicy(
+    request: MessagesRequest,
+    auth: AuthContext,
+  ): Promise<PolicyConfig> {
+    if (this.deps.policies === undefined) {
+      return DEFAULT_POLICY;
+    }
+    const requested =
+      typeof (request as { policy_name?: unknown }).policy_name === 'string'
+        ? ((request as { policy_name: string }).policy_name)
+        : undefined;
+    return this.deps.policies.resolve({
+      tenantId: auth.tenantId,
+      appId: auth.appId,
+      ...(requested !== undefined ? { requestedPolicy: requested } : {}),
+    });
+  }
+
+  private assertPolicyAllowsRequest(
+    policy: PolicyConfig,
+    request: MessagesRequest,
+  ): void {
+    if (
+      policy.allowed_models.length > 0 &&
+      !policy.allowed_models.includes(request.model)
+    ) {
+      throw new InvalidRequestError(
+        `model "${request.model}" not allowed by policy "${policy.name}"`,
+      );
+    }
+    if (
+      policy.max_tokens_ceiling !== undefined &&
+      request.max_tokens > policy.max_tokens_ceiling
+    ) {
+      throw new InvalidRequestError(
+        `max_tokens=${request.max_tokens.toString()} exceeds policy ceiling ${policy.max_tokens_ceiling.toString()}`,
+      );
+    }
+    if (policy.zdr_required && this.deps.zdrEnabled !== true) {
+      throw new PermissionError(
+        `policy "${policy.name}" requires ZDR but the gateway is not configured with ZDR`,
+      );
     }
   }
 

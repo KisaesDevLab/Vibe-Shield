@@ -20,6 +20,7 @@ import { accessLogMiddleware } from './middleware/access-log.js';
 import { apiKeyMiddleware } from './middleware/api-key.js';
 import { correlationIdMiddleware } from './middleware/correlation-id.js';
 import { sizeLimitMiddleware } from './middleware/size-limit.js';
+import type { PolicyResolver } from './policy/resolver.js';
 import type { RateLimiter } from './quota/rate-limiter.js';
 import type { SpendTracker } from './quota/spend-cap.js';
 import { healthRouter } from './routes/health.js';
@@ -43,6 +44,8 @@ export interface AppDeps {
   engineUrl?: string;
   rateLimiter?: RateLimiter;
   spendTracker?: SpendTracker;
+  policies?: PolicyResolver;
+  zdrEnabled?: boolean;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -79,6 +82,8 @@ export function createApp(deps: AppDeps): Express {
       ...(deps.anthropicSdk !== undefined ? { anthropicSdk: deps.anthropicSdk } : {}),
       ...(deps.rateLimiter !== undefined ? { rateLimiter: deps.rateLimiter } : {}),
       ...(deps.spendTracker !== undefined ? { spendTracker: deps.spendTracker } : {}),
+      ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
+      ...(deps.zdrEnabled !== undefined ? { zdrEnabled: deps.zdrEnabled } : {}),
     }),
   );
   v1.use(sessionsRouter({ sessions: deps.sessions, defaultTtlMinutes: deps.sessionTtlMinutes }));
