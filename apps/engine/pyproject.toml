@@ -1,19 +1,37 @@
 [project]
 name = "vibe-shield-engine"
-version = "0.0.0"
+version = "0.1.0"
 description = "Internal-only PII redaction engine. NER + custom CPA recognizers + regex backstops + tokenization."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "PolyForm-Internal-Use-1.0.0" }
-# Runtime deps are pinned in Phase 2 (presidio-analyzer, presidio-anonymizer, spacy,
-# transformers, fastapi, uvicorn, pydantic). Listed empty here so `uv sync` works
-# during Phase 1 verification without pulling the heavyweight NER stack.
-dependencies = []
+
+dependencies = [
+    # PII detection / NER
+    "presidio-analyzer==2.2.358",
+    "presidio-anonymizer==2.2.358",
+    "spacy==3.7.5",
+    # Pinned per BUILD_PLAN.md Phase 2; transformer-based recognizers come online
+    # in later phases. No torch/tf backend installed by default — see Dockerfile
+    # for the production install variant.
+    "transformers==4.46.3",
+    # API surface
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.0",
+    # Observability
+    "python-json-logger==3.2.1",
+    "prometheus-client==0.21.1",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "pytest-cov>=5.0",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+    "faker>=33.1",
     "ruff>=0.8",
     "mypy>=1.13",
 ]
@@ -38,7 +56,15 @@ warn_unused_ignores = true
 warn_return_any = true
 disallow_untyped_defs = true
 exclude = ["tests/fixtures"]
+# presidio + spacy ship without complete type stubs; treat as untyped imports.
+[[tool.mypy.overrides]]
+module = ["presidio_analyzer.*", "presidio_anonymizer.*", "spacy.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = [
+    "requires_model: test needs the configured spaCy model installed",
+]
+asyncio_mode = "auto"

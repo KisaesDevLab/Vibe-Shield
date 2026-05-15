@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1.7
+#
+# Vibe Shield engine — Python 3.12 + FastAPI + Presidio + spaCy en_core_web_lg.
+# Multi-stage to keep the runtime image lean. BUILD_PLAN.md target: <2.5 GB.
+#
+# This image is internal-only. Never publish to a public registry without
+# the appliance manifest gating it (Phase 21).
+
+ARG PYTHON_VERSION=3.12-slim-bookworm
+ARG SPACY_MODEL=en_core_web_lg
+
+# ---- Stage 1: builder — install deps + download spaCy model ----
+FROM python:${PYTHON_VERSION} AS builder
+
+ARG SPACY_MODEL
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv (fixed version for reproducibility).
+COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /usr/local/bin/uv
+
+WORKDIR /build
+COPY pyproject.toml ./
+# uv sync requires a lockfile or --no-lock. Phase 2 ships without a lock
+# (deps are pinned in pyproject); generate one in CI when wired.
+RUN uv venv /opt/venv \
+    && uv pip install --python /opt/venv/bin/python -r <(uv pip compile pyproject.toml)
+
+# Download the configured spaCy model into the venv's site-packages.
+RUN /opt/venv/bin/python -m spacy download ${SPACY_MODEL}
+
+# ---- Stage 2: runtime ----
+FROM python:${PYTHON_VERSION} AS runtime
+
+ARG SPACY_MODEL
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    VS_ENGINE_SPACY_MODEL=${SPACY_MODEL} \
+    VS_ENGINE_HOST=0.0.0.0 \
+    VS_ENGINE_PORT=8000
+
+# Drop root privileges. The engine never writes to disk in normal operation.
+RUN groupadd --system vibe \
+    && useradd --system --gid vibe --home /app --shell /usr/sbin/nologin vibe
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+COPY --chown=vibe:vibe app ./app
+
+USER vibe
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request,sys; \
+sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2).status==200 else 1)"
+
+# Single worker: AnalyzerEngine + spaCy model is ~600 MB resident; one
+# process keeps the memory footprint inside the appliance budget. Scale
+# horizontally with replicas if needed.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

@@ -9,7 +9,7 @@ SHELL := /bin/sh
 # Detect whether the engine workspace has been scaffolded yet (Phase 2).
 ENGINE_PRESENT := $(shell test -f apps/engine/pyproject.toml && echo 1 || echo 0)
 
-.PHONY: help dev down ps logs install lint typecheck test build verify clean
+.PHONY: help dev down ps logs install engine-models lint typecheck test build verify clean
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -30,11 +30,15 @@ ps: ## Show compose status
 logs: ## Tail compose logs
 	docker compose logs -f --tail=200
 
-install: ## Install all workspace deps (pnpm + uv)
+install: ## Install all workspace deps (pnpm + uv) and test-grade spaCy model
 	pnpm install
 ifeq ($(ENGINE_PRESENT),1)
 	cd apps/engine && uv sync
+	$(MAKE) engine-models
 endif
+
+engine-models: ## Download spaCy model used by the engine test suite (en_core_web_sm)
+	cd apps/engine && uv run python -m spacy download en_core_web_sm
 
 lint: ## Lint all workspaces
 	pnpm run lint

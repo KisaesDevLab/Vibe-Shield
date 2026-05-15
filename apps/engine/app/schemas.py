@@ -1,0 +1,60 @@
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class AnalyzeRequest(BaseModel):
+    text: str = Field(min_length=1)
+    language: str | None = None
+    entities: list[str] | None = None
+
+
+class EntitySpanModel(BaseModel):
+    entity_type: str
+    start: int
+    end: int
+    score: float
+
+
+class AnalyzeResponse(BaseModel):
+    results: list[EntitySpanModel]
+
+
+class RedactRequest(BaseModel):
+    text: str = Field(min_length=1)
+    language: str | None = None
+    entities: list[str] | None = None
+
+
+class TokenMapEntry(BaseModel):
+    token: str
+    entity_type: str
+    # cleartext is included so the gateway can populate the token vault.
+    # The engine never logs this field; the gateway must store it encrypted.
+    cleartext: str
+
+
+class RedactResponse(BaseModel):
+    redacted_text: str
+    spans: list[EntitySpanModel]
+    tokens: list[TokenMapEntry]
+
+
+class HealthResponse(BaseModel):
+    status: str
+    model: str
+    model_loaded: bool
+    recognizers_count: int
+    version: str
+
+
+class RecognizerInfo(BaseModel):
+    name: str
+    supported_entities: list[str]
+    supported_language: str
+    version: str
+
+
+class RecognizersResponse(BaseModel):
+    model: str
+    recognizers: list[RecognizerInfo]
