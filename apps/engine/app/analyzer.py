@@ -96,18 +96,47 @@ class AnalyzerService:
         language: str | None = None,
         entities: list[str] | None = None,
     ) -> list[EntitySpan]:
-        results = self.engine.analyze(
-            text=text,
-            language=language or self.language,
-            entities=entities,
-        )
-        spans = [EntitySpan.from_presidio(r) for r in results]
-        # Imported here to avoid the circular: whitelists imports EntitySpan
-        # from this module.
+        """Run the full redaction pipeline. Fail-closed: any internal error
+        is raised as ``EngineUnavailable``; the global handler maps it to
+        503 without echoing the exception message (which could carry
+        cleartext text via library-built error strings).
+        """
+        # Imports here to avoid circular: errors imports logging; whitelists
+        # and backstops import EntitySpan from this module.
+        from app.errors import EngineUnavailable
         from app.recognizers.whitelists import apply_whitelists
 
-        kept = apply_whitelists(text, spans)
-        return self._backstop_layer.apply(text, kept)
+        try:
+            results = self.engine.analyze(
+                text=text,
+                language=language or self.language,
+                entities=entities,
+            )
+            spans = [EntitySpan.from_presidio(r) for r in results]
+        except Exception as exc:
+            logger.error(
+                "presidio_analyze_failed",
+                extra={"error_class": type(exc).__name__},
+            )
+            raise EngineUnavailable("presidio analysis failed") from exc
+
+        try:
+            kept = apply_whitelists(text, spans)
+        except Exception as exc:
+            logger.error(
+                "whitelist_failed",
+                extra={"error_class": type(exc).__name__},
+            )
+            raise EngineUnavailable("whitelist failed") from exc
+
+        try:
+            return self._backstop_layer.apply(text, kept)
+        except Exception as exc:
+            logger.error(
+                "backstop_failed",
+                extra={"error_class": type(exc).__name__},
+            )
+            raise EngineUnavailable("backstop failed") from exc
 
     def list_recognizers(self) -> list[RecognizerInfoDict]:
         # Presidio's Recognizer doesn't ship type stubs — the attribute reads

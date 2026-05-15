@@ -6,7 +6,7 @@ The full design — compliance objectives, architecture, phased build plan, and 
 
 ## Status
 
-**Pre-alpha.** Phase 1 (repository foundation) is the current scope. App services (`apps/gateway`, `apps/engine`, `apps/admin`) are scaffolded in their respective phases — see BUILD_PLAN.md §4.
+**Pre-alpha.** Phases 1–4 of BUILD_PLAN.md are complete: repo foundation, FastAPI engine with Presidio + spaCy, seven CPA-domain custom recognizers, the whitelist post-processor, and the six regex backstops with miss logging. Sanitized 422 / 500 / 503 error envelopes enforce hard-rule #1 in error paths. Gateway, admin UI, token vault, and client SDK arrive in their respective phases.
 
 ## Quickstart
 

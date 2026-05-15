@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, Request
 from app import __version__
 from app.analyzer import AnalyzerService
 from app.config import Settings, load_settings
+from app.errors import install_error_handlers
 from app.logging import configure_logging, get_logger
 from app.metrics import ENTITIES_DETECTED, metrics_asgi_app
 from app.middleware import (
@@ -52,6 +53,10 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
     )
     app.state.settings = cfg
     app.state.analyzer = svc
+
+    # Sanitized error envelopes — see app/errors.py. Must be installed
+    # before middleware so they take effect for all request paths.
+    install_error_handlers(app)
 
     # Order matters: size limit first (cheapest reject), then correlation, then access log.
     app.add_middleware(AccessLogMiddleware)
