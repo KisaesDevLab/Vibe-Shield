@@ -27,6 +27,7 @@ import type { SpendTracker } from './quota/spend-cap.js';
 import { healthRouter } from './routes/health.js';
 import { materializeRouter } from './routes/materialize.js';
 import { messagesRouter } from './routes/messages.js';
+import { metricsRouter } from './routes/metrics.js';
 import { openapiRouter } from './routes/openapi.js';
 import { readyRouter } from './routes/ready.js';
 import { sessionsRouter } from './routes/sessions.js';
@@ -70,6 +71,7 @@ export function createApp(deps: AppDeps): Express {
   app.use(healthRouter());
   app.use(readyRouter({ db: deps.db, ...(deps.engineUrl !== undefined ? { engineUrl: deps.engineUrl } : {}) }));
   app.use(openapiRouter());
+  app.use(metricsRouter());
 
   // Everything under /v1 requires a valid Vibe-issued API key.
   const v1 = express.Router();

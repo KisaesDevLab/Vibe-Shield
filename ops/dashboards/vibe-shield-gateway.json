@@ -1,0 +1,78 @@
+{
+  "title": "Vibe Shield — Gateway",
+  "uid": "vs-gateway",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["vibe-shield"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "/v1/messages requests/sec",
+      "targets": [{
+        "expr": "sum by (status) (rate(vs_gateway_proxy_calls_total[5m]))",
+        "legendFormat": "{{status}}"
+      }],
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Anthropic round-trip P50 / P95 / P99",
+      "targets": [
+        {"expr": "histogram_quantile(0.5, sum(rate(vs_gateway_anthropic_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, sum(rate(vs_gateway_anthropic_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, sum(rate(vs_gateway_anthropic_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p99"}
+      ],
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Spend per tenant ($/hour)",
+      "targets": [{
+        "expr": "sum by (tenant_id) (rate(vs_gateway_spend_microdollars_total[1h])) / 1e6",
+        "legendFormat": "{{tenant_id}}"
+      }],
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Recognizer misses (last 24h)",
+      "targets": [{
+        "expr": "sum by (entity_type) (increase(vs_gateway_recognizer_misses_total[24h]))",
+        "legendFormat": "{{entity_type}}"
+      }],
+      "gridPos": {"x": 12, "y": 8, "w": 6, "h": 8}
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Spend cap breaches (24h)",
+      "targets": [{
+        "expr": "sum(increase(vs_gateway_spend_cap_breaches_total[24h]))"
+      }],
+      "gridPos": {"x": 18, "y": 8, "w": 6, "h": 4}
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Materialize events (24h)",
+      "targets": [{
+        "expr": "sum(increase(vs_gateway_materialize_events_total[24h]))"
+      }],
+      "gridPos": {"x": 18, "y": 12, "w": 6, "h": 4}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "HTTP P95 latency by route",
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum by (route, le) (rate(vs_gateway_http_latency_seconds_bucket[5m])))",
+        "legendFormat": "{{route}}"
+      }],
+      "gridPos": {"x": 0, "y": 16, "w": 24, "h": 8}
+    }
+  ]
+}

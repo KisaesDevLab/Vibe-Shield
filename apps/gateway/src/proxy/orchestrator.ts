@@ -28,6 +28,15 @@ import {
   PermissionError,
 } from '../errors.js';
 import type { AuthContext } from '../middleware/api-key.js';
+import {
+  anthropicLatency,
+  proxyCalls,
+  rateLimitBreaches,
+  spendCapBreaches,
+  spendMicrodollars,
+  tokensInput,
+  tokensOutput,
+} from '../metrics.js';
 import { DEFAULT_POLICY } from '../policy/built-in.js';
 import type { PolicyResolver } from '../policy/resolver.js';
 import type { PolicyConfig } from '../policy/schema.js';
@@ -35,7 +44,11 @@ import {
   RateLimitExceededError,
   type RateLimiter,
 } from '../quota/rate-limiter.js';
-import { SpendCapExceededError, type SpendTracker } from '../quota/spend-cap.js';
+import {
+  SpendCapExceededError,
+  type SpendTracker,
+  priceFor,
+} from '../quota/spend-cap.js';
 import type { MessagesRequest } from '../schemas/messages.js';
 import { redactRequest } from './redactor.js';
 import { reidentifyResponse } from './reidentifier.js';
@@ -99,13 +112,40 @@ export class ProxyOrchestrator {
     // 3. Call Anthropic with retry/backoff on transient failures.
     const anthropicParams = redactedToAnthropicParams(redacted.request);
     let anthropicResponse: Message;
+    const anthropicStart = process.hrtime.bigint();
     try {
       anthropicResponse = await withRetry(() =>
         this.deps.anthropic.messages.create(anthropicParams),
       );
+      anthropicLatency.observe(
+        Number(process.hrtime.bigint() - anthropicStart) / 1e9,
+      );
     } catch (err) {
+      anthropicLatency.observe(
+        Number(process.hrtime.bigint() - anthropicStart) / 1e9,
+      );
+      proxyCalls.inc({
+        tenant_id: auth.tenantId,
+        app_id: auth.appId,
+        model: anthropicParams.model,
+        status: 'error',
+      });
       throw mapAnthropicError(err);
     }
+    proxyCalls.inc({
+      tenant_id: auth.tenantId,
+      app_id: auth.appId,
+      model: anthropicParams.model,
+      status: 'ok',
+    });
+    tokensInput.inc(
+      { tenant_id: auth.tenantId, app_id: auth.appId, model: anthropicParams.model },
+      anthropicResponse.usage.input_tokens,
+    );
+    tokensOutput.inc(
+      { tenant_id: auth.tenantId, app_id: auth.appId, model: anthropicParams.model },
+      anthropicResponse.usage.output_tokens,
+    );
 
     // 4. Record spend (before re-identify so a re-id failure doesn't
     //    drop the audit row for a call that already happened).
@@ -118,6 +158,14 @@ export class ProxyOrchestrator {
         outputTokens: anthropicResponse.usage.output_tokens,
       });
     }
+    spendMicrodollars.inc(
+      { tenant_id: auth.tenantId, app_id: auth.appId, model: anthropicParams.model },
+      pricedMicrodollars(
+        anthropicParams.model,
+        anthropicResponse.usage.input_tokens,
+        anthropicResponse.usage.output_tokens,
+      ),
+    );
 
     // 5. Re-identify tokens in the response per the active policy.
     const reidentified = await reidentifyResponse(anthropicResponse, {
@@ -172,6 +220,7 @@ export class ProxyOrchestrator {
         );
       } catch (err) {
         if (err instanceof RateLimitExceededError) {
+          rateLimitBreaches.inc({ tenant_id: auth.tenantId, app_id: auth.appId });
           throw new RateLimitHttpError(err.limit, err.retryAfterSeconds);
         }
         throw err;
@@ -187,6 +236,7 @@ export class ProxyOrchestrator {
         );
       } catch (err) {
         if (err instanceof SpendCapExceededError) {
+          spendCapBreaches.inc({ tenant_id: auth.tenantId });
           throw new PermissionError(
             'monthly spend cap reached for this tenant',
           );
@@ -296,7 +346,19 @@ function redactedToAnthropicParams(req: MessagesRequest): MessageCreateParamsNon
   const rest = { ...req };
   delete (rest as { session_id?: unknown }).session_id;
   delete (rest as { stream?: unknown }).stream;
+  delete (rest as { policy_name?: unknown }).policy_name;
   return rest as unknown as MessageCreateParamsNonStreaming;
+}
+
+function pricedMicrodollars(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+): number {
+  // Convert bigint micro-dollars to a Number for the prom-client
+  // Counter (which expects number). Even at lifetime CPA-firm spend
+  // this stays well within Number.MAX_SAFE_INTEGER.
+  return Number(priceFor(model, inputTokens, outputTokens));
 }
 
 function mapAnthropicError(err: unknown): Error {
