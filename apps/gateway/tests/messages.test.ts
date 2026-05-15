@@ -32,15 +32,14 @@ describe.skipIf(!integrationEnabled)('POST /v1/messages (Phase 7 stub)', () => {
     messages: [{ role: 'user', content: 'Hi' }],
   };
 
-  it('returns 501 with Anthropic envelope for valid request', async () => {
+  it('returns 200 + Anthropic-shaped response (Phase 8 proxy live)', async () => {
     const r = await request(app)
       .post('/v1/messages')
       .set('Authorization', `Bearer ${key}`)
       .send(valid);
-    expect(r.status).toBe(501);
-    expect(r.body.type).toBe('error');
-    expect(r.body.error.type).toBe('api_error');
-    expect(r.body.error.message).toContain('Phase 8');
+    expect(r.status).toBe(200);
+    expect(r.body.type).toBe('message');
+    expect(r.headers['vs-session-id']).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it('returns 400 with invalid_request_error for missing model', async () => {

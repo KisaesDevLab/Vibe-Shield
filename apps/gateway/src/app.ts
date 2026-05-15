@@ -10,7 +10,10 @@ import type {
   ApiKeyStore,
   Database,
   SessionManager,
+  TokenVault,
 } from '@kisaesdevlab/vibe-shield-schema';
+import type { AnthropicMessagesClient } from './anthropic/client.js';
+import type { EngineClient } from './engine/client.js';
 import { errorHandler } from './errors.js';
 import { accessLogMiddleware } from './middleware/access-log.js';
 import { apiKeyMiddleware } from './middleware/api-key.js';
@@ -26,6 +29,9 @@ export interface AppDeps {
   db: Database;
   apiKeys: ApiKeyStore;
   sessions: SessionManager;
+  vault: TokenVault;
+  engine: EngineClient;
+  anthropic: AnthropicMessagesClient;
   logger: Logger;
   maxRequestBytes: number;
   sessionTtlMinutes: number;
@@ -55,7 +61,16 @@ export function createApp(deps: AppDeps): Express {
   // Everything under /v1 requires a valid Vibe-issued API key.
   const v1 = express.Router();
   v1.use(apiKeyMiddleware(deps.apiKeys));
-  v1.use(messagesRouter());
+  v1.use(
+    messagesRouter({
+      engine: deps.engine,
+      anthropic: deps.anthropic,
+      vault: deps.vault,
+      sessions: deps.sessions,
+      apiKeys: deps.apiKeys,
+      defaultSessionTtlMinutes: deps.sessionTtlMinutes,
+    }),
+  );
   v1.use(sessionsRouter({ sessions: deps.sessions, defaultTtlMinutes: deps.sessionTtlMinutes }));
   app.use(v1);
 

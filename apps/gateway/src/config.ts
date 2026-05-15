@@ -15,6 +15,14 @@ const configSchema = z.object({
   ENGINE_URL: z.string().url().default('http://127.0.0.1:8000'),
   /** AES-256-GCM master key, 32 bytes base64. Required for token-vault use. */
   VS_KEK: z.string().min(1, 'VS_KEK is required'),
+  /** Commercial Anthropic API key. Verified at startup via /v1/models. */
+  ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
+  /** Opt in to Zero Data Retention. Requires the ZDR addendum signed on
+   *  the Anthropic account; the header alone doesn't activate ZDR. */
+  ZDR_ENABLED: z
+    .union([z.literal('true'), z.literal('false'), z.boolean()])
+    .transform((v) => v === true || v === 'true')
+    .default('false'),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),

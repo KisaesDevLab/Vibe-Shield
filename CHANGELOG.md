@@ -4,6 +4,34 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — Phase 8 (part 1): Anthropic Claude API proxy — non-streaming
+
+Core end-to-end redaction pipeline live: `POST /v1/messages` accepts an Anthropic Messages API request, redacts every cleartext field through the Python engine, persists tokens in the per-session vault, calls Anthropic with the redacted payload, and re-identifies tokens in the response before returning to the client. The 501 from Phase 7 is gone.
+
+- **`EngineClient`** (`apps/gateway/src/engine/client.ts`) — typed `fetch` wrapper for the engine's `/redact` / `/analyze` / `/health`. Per-call timeout, propagates `X-Correlation-Id`, sanitized `EngineUnreachableError` / `EngineFailureError` (no body content in error messages).
+- **`probeAnthropicKey`** (`src/anthropic/probe.ts`) — startup commercial-key probe via direct `fetch` to `GET /v1/models` (decoupled from SDK version). 401/403 → `ConsumerKeyError`, fail-closed: gateway refuses to start. Error messages never echo the API key.
+- **Anthropic client wrapper** (`src/anthropic/client.ts`) — wraps `@anthropic-ai/sdk` with optional `anthropic-zdr: enabled` header (gated on `ZDR_ENABLED`). Exposes a minimal interface tests can mock.
+- **`PerTenantKeyResolver`** (`src/tenant-key/resolver.ts`) — `TenantKeyResolver` impl backed by `vs_tenant_keys`. First-touch provisioning: mints + wraps a new DEK if no row exists, racing safely on the unique PK. Caches cleartext DEKs for the request lifetime; `clear()` zeros them on shutdown.
+- **Request redactor** (`src/proxy/redactor.ts`) — walks the Anthropic Messages request:
+  - String content + system prompt → engine `/redact`, then re-mapped through the session vault so tokens are session-stable rather than per-request.
+  - `tool_use.input` → recursive walk of arbitrary JSON, redacting only string values.
+  - `tool_result.content` → strings + nested JSON.
+  - Image blocks pass through (Phase 17).
+- **Response re-identifier** (`src/proxy/reidentifier.ts`) — collects every `<ENTITY_N>` token in the response (text blocks, `tool_use.input`, `tool_result.content`), resolves them in parallel through the vault. **Unknown tokens pass through unchanged** — Anthropic occasionally hallucinates angle-bracketed text; we never resolve tokens that weren't allocated for this session.
+- **Orchestrator** (`src/proxy/orchestrator.ts`) — ties it together. Honors `request.session_id` if supplied; otherwise opens an ephemeral session bound to the auth tenant. Anthropic 4xx → `invalid_request_error` (400); Anthropic 5xx → `engine_unavailable` (503). Phase 8b will add retry + circuit breaker.
+- **`stream: true` returns 501 with the "Phase 8b" marker** — SSE proxy is the next phase, alongside Redis rate limiting + spend caps.
+- **Config** gained `ANTHROPIC_API_KEY` (required) and `ZDR_ENABLED` (boolean, default false).
+- **Gateway tests grew from 23 → 36 cases:**
+  - **Probe (6)** — 200/401/403/5xx/network mapping; **error message never contains the API key**.
+  - **Proxy (7)** — full SSN+name+email roundtrip with stub Anthropic (asserts outbound payload contains tokens not cleartext, asserts response re-identifies); system prompt redaction; recursive tool-use input redaction; auth required; `stream: true` → 501; Anthropic 4xx → 400; Anthropic 5xx → 503.
+
+### Deferred to Phase 8b (next phase)
+- SSE streaming for `stream: true` requests
+- Retry/backoff with jitter on Anthropic transients
+- Per-tenant rate limiting in Redis
+- Per-tenant monthly spend caps
+- Golden-recording test fixtures
+
 ### Added — Phase 7: Node.js gateway service skeleton
 
 - `apps/gateway` workspace (`@kisaesdevlab/vibe-shield-gateway`): Express 5 + Pino + Zod, strict tsconfig matching `packages/schema`.
