@@ -127,6 +127,22 @@ export const errorHandler: ErrorRequestHandler = (err: unknown, req: Request, re
       .json(envelope('invalid_request_error', `validation failed: ${fields.join(', ')}`));
     return;
   }
+  // Express body-parser raises SyntaxError on malformed JSON with
+  // .type === 'entity.parse.failed' (and status 400). Without an
+  // explicit branch these fall through to the generic 500/api_error,
+  // which is wrong: malformed JSON is a client error, not a server
+  // failure. Surface as 400/invalid_request_error.
+  if (
+    err instanceof SyntaxError &&
+    typeof (err as unknown as { type?: unknown }).type === 'string' &&
+    (err as unknown as { type: string }).type === 'entity.parse.failed'
+  ) {
+    if (logger !== undefined) {
+      logger.error({ error_class: 'SyntaxError' }, 'body_parse_error');
+    }
+    res.status(400).json(envelope('invalid_request_error', 'malformed JSON body'));
+    return;
+  }
   if (logger !== undefined) {
     logger.error(
       { error_class: err instanceof Error ? err.name : 'Unknown' },

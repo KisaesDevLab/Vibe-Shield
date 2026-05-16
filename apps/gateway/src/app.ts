@@ -81,7 +81,23 @@ export function createApp(deps: AppDeps): Express {
   app.use(openapiRouter());
   app.use(metricsRouter());
 
-  // Everything under /v1 requires a valid Vibe-issued API key.
+  // Admin routes must mount BEFORE the v1 tenant-key router because
+  // both share the /v1 prefix. Express matches routes in registration
+  // order — without this, requests to /v1/admin/* hit the tenant
+  // apiKeyMiddleware first and 401 on the missing Bearer header
+  // before ever reaching the admin router's X-Admin-Key check.
+  app.use(
+    adminRouter({
+      apiKeys: deps.apiKeys,
+      ...(deps.adminKey !== undefined ? { adminKey: deps.adminKey } : {}),
+      ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
+      ...(deps.recognizerMisses !== undefined ? { recognizerMisses: deps.recognizerMisses } : {}),
+      ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
+      ...(deps.reprobe !== undefined ? { reprobe: deps.reprobe } : {}),
+    }),
+  );
+
+  // Everything else under /v1 requires a valid Vibe-issued tenant API key.
   const v1 = express.Router();
   v1.use(apiKeyMiddleware(deps.apiKeys));
   v1.use(
@@ -111,19 +127,6 @@ export function createApp(deps: AppDeps): Express {
     }),
   );
   app.use(v1);
-
-  // Admin routes mount above the v1 router because they use a separate
-  // X-Admin-Key auth middleware, not the tenant API-key middleware.
-  app.use(
-    adminRouter({
-      apiKeys: deps.apiKeys,
-      ...(deps.adminKey !== undefined ? { adminKey: deps.adminKey } : {}),
-      ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
-      ...(deps.recognizerMisses !== undefined ? { recognizerMisses: deps.recognizerMisses } : {}),
-      ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
-      ...(deps.reprobe !== undefined ? { reprobe: deps.reprobe } : {}),
-    }),
-  );
 
   app.use(errorHandler);
   return app;
