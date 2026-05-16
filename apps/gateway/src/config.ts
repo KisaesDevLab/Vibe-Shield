@@ -50,6 +50,9 @@ const configSchema = z.object({
     .int()
     .nonnegative()
     .default(900_000),
+  /** Admin API key for /v1/admin/* (X-Admin-Key header). When unset,
+   *  the admin API refuses every request with 401. v1.1 §3.3. */
+  GATEWAY_ADMIN_KEY: z.string().min(1).optional(),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 });
 

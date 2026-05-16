@@ -1,0 +1,109 @@
+/*
+ * Minimal v1.1 admin styles. Defers shadcn/ui + Tailwind to v1.2 — for
+ * now, hand-rolled CSS keeps the bundle tiny and the dev loop fast.
+ * The visual language is deliberately spartan: this is a CPA-firm
+ * admin tool, not a marketing surface.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  background: #f6f7f9;
+  color: #1a1d23;
+}
+
+a {
+  color: #2563eb;
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+button {
+  font: inherit;
+  cursor: pointer;
+  background: #1a1d23;
+  color: #fff;
+  border: 1px solid #1a1d23;
+  border-radius: 6px;
+  padding: 6px 12px;
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.secondary {
+  background: #fff;
+  color: #1a1d23;
+}
+button.danger {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #fff;
+}
+
+input[type="text"], input[type="password"] {
+  font: inherit;
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+}
+
+table { width: 100%; border-collapse: collapse; }
+th, td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+th { font-weight: 600; color: #374151; background: #f9fafb; }
+
+.layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  height: 100%;
+}
+.sidebar {
+  background: #1a1d23;
+  color: #f3f4f6;
+  padding: 16px;
+}
+.sidebar h1 { font-size: 16px; margin: 0 0 16px 0; }
+.sidebar nav a {
+  display: block;
+  color: #f3f4f6;
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin-bottom: 2px;
+}
+.sidebar nav a.active { background: #2d3138; }
+.sidebar nav a:hover { text-decoration: none; background: #2d3138; }
+
+.content {
+  padding: 24px 32px;
+  overflow: auto;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.muted { color: #6b7280; }
+.error { color: #b91c1c; }
+.success { color: #047857; }
+.code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  background: #f3f4f6;
+  padding: 2px 6px;
+  border-radius: 4px;
+}

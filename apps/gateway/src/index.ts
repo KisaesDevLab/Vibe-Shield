@@ -80,6 +80,13 @@ async function main(): Promise<void> {
   const audit = new AuditLogger(dbHandle.db);
   const recognizerMisses = new RecognizerMissStore(dbHandle.db);
 
+  const reprobe = new AnthropicKeyReprobe({
+    apiKey: config.ANTHROPIC_API_KEY,
+    intervalMs: config.ANTHROPIC_REPROBE_INTERVAL_MS,
+    logger,
+  });
+  reprobe.start();
+
   const app = createApp({
     db: dbHandle.db,
     apiKeys,
@@ -98,14 +105,9 @@ async function main(): Promise<void> {
     maxRequestBytes: config.MAX_REQUEST_BYTES,
     sessionTtlMinutes: config.SESSION_TTL_MINUTES,
     engineUrl: config.ENGINE_URL,
+    reprobe,
+    ...(config.GATEWAY_ADMIN_KEY !== undefined ? { adminKey: config.GATEWAY_ADMIN_KEY } : {}),
   });
-
-  const reprobe = new AnthropicKeyReprobe({
-    apiKey: config.ANTHROPIC_API_KEY,
-    intervalMs: config.ANTHROPIC_REPROBE_INTERVAL_MS,
-    logger,
-  });
-  reprobe.start();
 
   const server = app.listen(config.PORT, config.HOST, () => {
     logger.info(

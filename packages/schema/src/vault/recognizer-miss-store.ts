@@ -8,6 +8,7 @@
  * the admin UI's recognizer-tuning view).
  */
 
+import { desc } from 'drizzle-orm';
 import {
   recognizerMisses,
   type NewRecognizerMiss,
@@ -39,4 +40,32 @@ export class RecognizerMissStore {
       .from(recognizerMisses);
     return rows.length;
   }
+
+  /**
+   * Admin UI helper (v1.1 §3.3): list recent misses, newest first.
+   * ``limit`` capped at 500.
+   */
+  async listRecent(opts: { limit?: number } = {}): Promise<AdminMissView[]> {
+    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+    const rows = await this.db
+      .select()
+      .from(recognizerMisses)
+      .orderBy(desc(recognizerMisses.createdAt))
+      .limit(limit);
+    return rows.map((r) => ({
+      id: r.id,
+      pattern: r.pattern,
+      sampleHash: r.sampleHash,
+      severity: r.severity,
+      createdAt: r.createdAt.toISOString(),
+    }));
+  }
+}
+
+export interface AdminMissView {
+  id: string;
+  pattern: string;
+  sampleHash: string;
+  severity: string;
+  createdAt: string;
 }

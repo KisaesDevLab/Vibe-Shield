@@ -16,6 +16,7 @@ import type {
   TokenVault,
 } from '@kisaesdevlab/vibe-shield-schema';
 import type { AnthropicMessagesClient } from './anthropic/client.js';
+import type { AnthropicKeyReprobe } from './anthropic/reprobe.js';
 import type { EngineClient } from './engine/client.js';
 import { errorHandler } from './errors.js';
 import { accessLogMiddleware } from './middleware/access-log.js';
@@ -25,6 +26,7 @@ import { sizeLimitMiddleware } from './middleware/size-limit.js';
 import type { PolicyResolver } from './policy/resolver.js';
 import type { RateLimiter } from './quota/rate-limiter.js';
 import type { SpendTracker } from './quota/spend-cap.js';
+import { adminRouter } from './routes/admin.js';
 import { healthRouter } from './routes/health.js';
 import { materializeRouter } from './routes/materialize.js';
 import { messagesRouter } from './routes/messages.js';
@@ -52,6 +54,10 @@ export interface AppDeps {
   zdrEnabled?: boolean;
   audit?: AuditLogger;
   recognizerMisses?: RecognizerMissStore;
+  /** Admin API key (X-Admin-Key). When undefined, admin routes refuse all requests. */
+  adminKey?: string;
+  /** Reprobe handle for the admin "probe now" endpoint. */
+  reprobe?: AnthropicKeyReprobe;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -105,6 +111,19 @@ export function createApp(deps: AppDeps): Express {
     }),
   );
   app.use(v1);
+
+  // Admin routes mount above the v1 router because they use a separate
+  // X-Admin-Key auth middleware, not the tenant API-key middleware.
+  app.use(
+    adminRouter({
+      apiKeys: deps.apiKeys,
+      ...(deps.adminKey !== undefined ? { adminKey: deps.adminKey } : {}),
+      ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
+      ...(deps.recognizerMisses !== undefined ? { recognizerMisses: deps.recognizerMisses } : {}),
+      ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
+      ...(deps.reprobe !== undefined ? { reprobe: deps.reprobe } : {}),
+    }),
+  );
 
   app.use(errorHandler);
   return app;
