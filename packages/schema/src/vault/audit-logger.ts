@@ -98,6 +98,50 @@ export class AuditLogger {
     const rows = await this.db.select({ id: audit.id }).from(audit).where(where);
     return rows.length;
   }
+
+  /**
+   * Admin UI helper (v1.1 §3.3): list recent audit events. Optional
+   * ``tenantId`` filter; ``limit`` capped at 500. Returns hex-encoded
+   * payload hashes — cleartext is never persisted, so there's nothing
+   * else we could surface.
+   */
+  async listRecent(
+    opts: { tenantId?: string; limit?: number } = {},
+  ): Promise<AdminAuditView[]> {
+    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+    let query = this.db
+      .select({
+        id: audit.id,
+        tenantId: audit.tenantId,
+        sessionId: audit.sessionId,
+        eventType: audit.eventType,
+        payloadHash: audit.payloadHash,
+        createdAt: audit.createdAt,
+      })
+      .from(audit)
+      .$dynamic();
+    if (opts.tenantId !== undefined) {
+      query = query.where(eq(audit.tenantId, opts.tenantId));
+    }
+    const rows = await query.orderBy(asc(audit.createdAt)).limit(limit);
+    return rows.reverse().map((r) => ({
+      id: r.id,
+      tenantId: r.tenantId,
+      sessionId: r.sessionId,
+      eventType: r.eventType,
+      payloadHash: r.payloadHash.toString('hex'),
+      createdAt: r.createdAt.toISOString(),
+    }));
+  }
+}
+
+export interface AdminAuditView {
+  id: string;
+  tenantId: string;
+  sessionId: string | null;
+  eventType: string;
+  payloadHash: string; // hex
+  createdAt: string;
 }
 
 function sha256(s: string): Buffer {

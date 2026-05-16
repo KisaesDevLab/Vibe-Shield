@@ -146,6 +146,44 @@ export class ApiKeyStore {
   static hash(key: string): Buffer {
     return hashKey(key);
   }
+
+  /**
+   * Admin UI helper (v1.1 §3.3): list every issued key with operational
+   * metadata. The bytea key_hash is rendered as a hex string for use as
+   * a public ID — the cleartext key is never present in the row.
+   */
+  async list(): Promise<AdminApiKeyView[]> {
+    const rows = await this.db.select().from(apiKeys);
+    return rows.map((r) => ({
+      id: r.keyHash.toString('hex'),
+      tenantId: r.tenantId,
+      appId: r.appId,
+      label: r.name,
+      createdAt: r.createdAt.toISOString(),
+      lastUsedAt: r.lastUsedAt === null ? null : r.lastUsedAt.toISOString(),
+      revokedAt: r.revokedAt === null ? null : r.revokedAt.toISOString(),
+    }));
+  }
+
+  /**
+   * Admin UI helper (v1.1 §3.3): revoke a key by hex-encoded hash.
+   * Returns false if no row matched (already revoked, or wrong hash).
+   */
+  async revokeByHashHex(hex: string): Promise<boolean> {
+    if (!/^[0-9a-fA-F]{64}$/.test(hex)) return false;
+    return this.revoke(Buffer.from(hex, 'hex'));
+  }
+}
+
+export interface AdminApiKeyView {
+  /** Hex-encoded key_hash; opaque from the admin UI's perspective. */
+  id: string;
+  tenantId: string;
+  appId: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
 }
 
 export function generateApiKey(): string {

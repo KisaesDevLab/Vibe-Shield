@@ -4,6 +4,40 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — v1.1 §3.3: minimal admin UI + admin REST API (Phase 13)
+
+Closes the v1.1 admin-UI scope per `.shield-build/open-decisions.md::D5`. New `apps/admin/` workspace + `/v1/admin/*` REST surface in the gateway.
+
+**Frontend** (`apps/admin/`):
+- Vite 6 + React 18 + TypeScript scaffolding. Hand-rolled minimal CSS — Tailwind / shadcn deferred to v1.2 to keep the bundle small and the dev loop fast.
+- `LoginGate` holds the admin key in memory only. Refresh re-prompts. No localStorage / sessionStorage.
+- 5 views: **API Keys** (list / issue / revoke), **Audit Log** (filterable by tenant), **Recognizer Misses** (sample-hash + severity), **Anthropic Probe** (run-now button), **Policies** (read-only list).
+- `AdminClient` wraps fetch with X-Admin-Key auth; never logs the key or response bodies; surfaces errors as `AdminApiError` with status + endpoint only.
+- 4 vitest cases pin the auth header + body serialization + 204 handling + 4xx error mapping.
+
+**Backend** (`apps/gateway/src/routes/admin.ts`):
+- New `adminRouter` mounted at `/v1/admin/*`. Auth middleware uses `timingSafeEqual` against `GATEWAY_ADMIN_KEY` env var. When the env var is unset, every admin request 401s (admin disabled).
+- Endpoints:
+  - `GET /v1/admin/api-keys` — list all issued keys (cleartext never returned).
+  - `POST /v1/admin/api-keys` — issue, returns cleartext key ONCE.
+  - `DELETE /v1/admin/api-keys/:id` — revoke by hex hash; idempotent.
+  - `GET /v1/admin/audit?tenant_id=…&limit=…` — recent audit events with hex payload hashes.
+  - `GET /v1/admin/recognizer-misses?limit=…` — recent backstop misses.
+  - `POST /v1/admin/anthropic/probe` — invoke `AnthropicKeyReprobe.runOnce`.
+  - `GET /v1/admin/policies` — read-only summary list (JSON editing deferred to v1.2 per D5).
+- All endpoints fail closed when their backing dep isn't configured; no silent degradation.
+
+**Schema additions**:
+- `ApiKeyStore.list()` and `ApiKeyStore.revokeByHashHex()` for the admin UI helpers; no change to existing `issue` / `resolve` / `revoke` API.
+- `AuditLogger.listRecent({ tenantId?, limit? })` with limit capped at 500.
+- `RecognizerMissStore.listRecent({ limit? })` with the same cap.
+- New exports: `AdminApiKeyView`, `AdminAuditView`, `AdminMissView`.
+
+**Config**:
+- `GATEWAY_ADMIN_KEY` (optional). When unset, admin API disabled.
+
+**Out of scope for v1.1** (deferred per D5): policy editor (JSON view UI + PUT route), tenant management, dashboards / charts, validation runner UI.
+
 ### Added — v1.1 Tier C polish (§3.10 k6, §3.11 multi-arch)
 
 - **§3.10 — k6 load test scripts** (`qa/load/`). Two scripts encode the BUILD_PLAN §19 SLOs as k6 thresholds:
