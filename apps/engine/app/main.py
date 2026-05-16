@@ -155,7 +155,7 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
         face_detector = None
         barcode_detector = None
         if settings.image_ocr_enabled:
-            from app.image import (  # noqa: PLC0415
+            from app.image import (
                 TesseractOcrBackend,
                 apply_solid_black_mask,
             )
@@ -163,11 +163,11 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
             ocr = TesseractOcrBackend()
             masker = apply_solid_black_mask
         if settings.image_face_detection_enabled:
-            from app.image import HaarFaceDetector  # noqa: PLC0415
+            from app.image import HaarFaceDetector
 
             face_detector = HaarFaceDetector()
         if settings.image_barcode_detection_enabled:
-            from app.image import PyzbarBarcodeDetector  # noqa: PLC0415
+            from app.image import PyzbarBarcodeDetector
 
             barcode_detector = PyzbarBarcodeDetector()
         redactor = ImageRedactor(
