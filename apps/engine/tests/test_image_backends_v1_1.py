@@ -33,12 +33,12 @@ _HAS_TESSERACT = shutil.which("tesseract") is not None
 
 def _has_libzbar() -> bool:
     try:
-        from pyzbar import pyzbar  # noqa: PLC0415
+        from pyzbar import pyzbar
 
         # libzbar is dlopen'd at first use; force a probe by decoding an
         # empty array.
         pyzbar.decode(np.zeros((10, 10, 3), dtype=np.uint8))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
     return True
 
@@ -101,7 +101,7 @@ def test_tesseract_returns_empty_for_blank_image() -> None:
 
 
 def test_tesseract_unreadable_image_fails_closed() -> None:
-    from app.image import OcrUnavailable  # noqa: PLC0415
+    from app.image import OcrUnavailable
 
     backend = TesseractOcrBackend()
     with pytest.raises(OcrUnavailable):
@@ -115,7 +115,7 @@ def test_masker_paints_black_over_region() -> None:
     img = _render_text_png("HELLO WORLD")
     region = MaskedRegion(
         entity_type="PERSON",
-        token="<PERSON_1>",  # noqa: S106 — sentinel, not a credential
+        token="<PERSON_1>",
         x=0,
         y=0,
         width=200,
@@ -146,7 +146,7 @@ def test_masker_skips_zero_area_regions() -> None:
     img = _render_text_png("HELLO")
     region = MaskedRegion(
         entity_type="PERSON",
-        token="<X>",  # noqa: S106
+        token="<X>",
         x=0, y=0, width=0, height=10,
     )
     # Should not raise; zero-width region is ignored.
@@ -165,7 +165,7 @@ def test_face_detector_finds_no_faces_in_blank_image() -> None:
 
 
 def test_face_detector_unreadable_image_fails_closed() -> None:
-    from app.image import FaceDetectionUnavailable  # noqa: PLC0415
+    from app.image import FaceDetectionUnavailable
 
     detector = HaarFaceDetector()
     with pytest.raises(FaceDetectionUnavailable):
@@ -195,7 +195,7 @@ def test_barcode_detector_no_barcode_returns_empty() -> None:
 
 
 def test_barcode_detector_unreadable_image_fails_closed() -> None:
-    from app.image import BarcodeDetectionUnavailable  # noqa: PLC0415
+    from app.image import BarcodeDetectionUnavailable
 
     detector = PyzbarBarcodeDetector()
     with pytest.raises(BarcodeDetectionUnavailable):
@@ -210,9 +210,9 @@ def test_full_pipeline_tesseract_plus_masking_redacts_email() -> None:
     """End-to-end: render an image with PII, run through ImageRedactor
     with real Tesseract + Pillow masking, assert the email region is
     masked black in the output bytes."""
-    from app.analyzer import AnalyzerService  # noqa: PLC0415
-    from app.config import Settings  # noqa: PLC0415
-    from app.image import ImageRedactor  # noqa: PLC0415
+    from app.analyzer import AnalyzerService
+    from app.config import Settings
+    from app.image import ImageRedactor
 
     settings = Settings(spacy_model="en_core_web_sm", log_level="warning")
     analyzer = AnalyzerService(spacy_model=settings.spacy_model, language=settings.default_language)
@@ -237,9 +237,9 @@ def test_full_pipeline_tesseract_plus_masking_redacts_email() -> None:
 
 @pytest.mark.skipif(not _HAS_ZBAR, reason="libzbar not installed")
 def test_full_pipeline_masks_qr_region_with_solid_black() -> None:
-    from app.analyzer import AnalyzerService  # noqa: PLC0415
-    from app.config import Settings  # noqa: PLC0415
-    from app.image import ImageRedactor  # noqa: PLC0415
+    from app.analyzer import AnalyzerService
+    from app.config import Settings
+    from app.image import ImageRedactor
 
     settings = Settings(spacy_model="en_core_web_sm", log_level="warning")
     analyzer = AnalyzerService(spacy_model=settings.spacy_model, language=settings.default_language)
