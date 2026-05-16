@@ -41,11 +41,15 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=raw,value=latest
+      # v1.1 §3.11: multi-arch build. linux/amd64 for the NucBox M6
+      # appliance baseline; linux/arm64 for the Pi 5 future-deployment
+      # path called out in BUILD_PLAN §20.
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

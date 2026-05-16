@@ -4,6 +4,14 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — v1.1 Tier C polish (§3.10 k6, §3.11 multi-arch)
+
+- **§3.10 — k6 load test scripts** (`qa/load/`). Two scripts encode the BUILD_PLAN §19 SLOs as k6 thresholds:
+  - `engine-redact.js` — 30 VU × 60s against `/redact`. P50 < 80ms / P99 < 300ms / failure rate < 0.1%.
+  - `gateway-messages.js` — 5 VU × 60s against `/v1/messages` (full path incl. Anthropic). P50 < 150ms / P99 < 600ms / failure rate < 0.5%.
+  - Synthetic Faker-derived prompts only; never logs response bodies; failed-threshold runs exit non-zero. Not part of per-PR CI (cost + Anthropic rate limits) — intended for pre-release smoke + perf-regression diagnosis. README documents invocation.
+- **§3.11 — multi-arch image release**. `release.yml` adds `docker/setup-qemu-action@v3` and switches build platforms to `linux/amd64,linux/arm64`. GHCR receives a manifest list per tag; arm64 unblocks the Pi 5 future-deployment path called out in BUILD_PLAN §20.
+
 ### Added — v1.1 §3.2: real image-redaction backends (Phase 17 v1.1)
 
 The v1.0 image pipeline shipped the API surface + per-page workflow + audit-event type behind a stub OCR. v1.1 wires the production backends without changing the API contract — Converter / GLM-OCR consumers can drop in the new image without code changes.
