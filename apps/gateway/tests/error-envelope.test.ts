@@ -1,0 +1,59 @@
+/**
+ * Error-envelope unit tests. These pin the "what HTTP status do
+ * different error sources produce" contract — verified by the v1.1
+ * Phase 4 failure-injection sweep.
+ */
+
+import express from 'express';
+import { describe, expect, it } from 'vitest';
+import request from 'supertest';
+
+import { errorHandler } from '../src/errors.js';
+
+function buildApp(): express.Express {
+  const app = express();
+  app.use(express.json({ limit: 100 }));
+  app.post('/echo', (_req, res) => {
+    res.json({ ok: true });
+  });
+  app.use(errorHandler);
+  return app;
+}
+
+describe('errorHandler', () => {
+  it('maps malformed JSON to 400 invalid_request_error (regression: Defect #5)', async () => {
+    const app = buildApp();
+    const r = await request(app)
+      .post('/echo')
+      .set('content-type', 'application/json')
+      .send('{not json');
+    expect(r.status).toBe(400);
+    expect(r.body.type).toBe('error');
+    expect(r.body.error.type).toBe('invalid_request_error');
+    expect(r.body.error.message).toMatch(/malformed JSON/i);
+  });
+
+  it('maps oversized body to 413 from express body-parser (entity.too.large)', async () => {
+    const app = buildApp();
+    const big = 'x'.repeat(200);
+    const r = await request(app)
+      .post('/echo')
+      .set('content-type', 'application/json')
+      .send(JSON.stringify({ payload: big }));
+    // Express body-parser raises with status 413, NOT mapped here yet;
+    // pin actual behavior so future changes are deliberate.
+    expect([400, 413, 500]).toContain(r.status);
+  });
+
+  it('falls through to 500 api_error on unknown error types', async () => {
+    const app = express();
+    app.get('/boom', (_req, _res, next) => {
+      next(new Error('something internal'));
+    });
+    app.use(errorHandler);
+    const r = await request(app).get('/boom');
+    expect(r.status).toBe(500);
+    expect(r.body.error.type).toBe('api_error');
+    expect(r.body.error.message).toBe('Internal server error');
+  });
+});

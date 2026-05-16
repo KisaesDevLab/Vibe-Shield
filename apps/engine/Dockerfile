@@ -33,8 +33,14 @@ COPY pyproject.toml uv.lock ./
 # deps (pytest, mypy, ruff) out of the runtime image.
 RUN uv sync --frozen --no-dev
 
-# Download the production spaCy model into the synced env.
-RUN uv run --no-dev --with pip python -m spacy download ${SPACY_MODEL}
+# Install the production spaCy model directly into the venv.
+# `uv run --with pip python -m spacy download` lands the model in an
+# ephemeral environment whose site-packages does NOT persist to the
+# runtime stage's COPY. Use `uv pip install --python ...` instead so
+# the model wheel installs directly into /build/.venv where it's seen
+# by both spacy.util.is_package(...) and presidio at runtime.
+RUN uv pip install --python /build/.venv/bin/python \
+    "https://github.com/explosion/spacy-models/releases/download/${SPACY_MODEL}-3.7.1/${SPACY_MODEL}-3.7.1-py3-none-any.whl"
 
 # ---- Stage 2: runtime ----
 FROM python:${PYTHON_VERSION} AS runtime
@@ -87,4 +93,4 @@ sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2).s
 # Single worker: AnalyzerEngine + spaCy model is ~600 MB resident; one
 # process keeps the memory footprint inside the appliance budget. Scale
 # horizontally with replicas if needed.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

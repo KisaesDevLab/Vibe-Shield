@@ -31,7 +31,9 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      # 6379 is commonly held by other Vibe app stacks on this dev box.
+      # 6395 keeps Vibe Shield isolated. Override via REDIS_PORT.
+      - "${REDIS_PORT:-6395}:6379"
     volumes:
       - vs-redis:/data
     healthcheck:
