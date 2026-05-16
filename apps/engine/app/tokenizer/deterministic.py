@@ -25,6 +25,13 @@ class TokenAllocation:
     entity_type: str
     cleartext: str
 
+    def __repr__(self) -> str:
+        # v1.1.3 §review (R1.14): the default dataclass repr would print
+        # cleartext if anything stringifies a TokenAllocation (e.g.,
+        # f"{allocation}" in a stray log call). Mask it. The token +
+        # entity_type are non-PII identifiers; safe to surface.
+        return f"TokenAllocation(token={self.token!r}, entity_type={self.entity_type!r}, cleartext=<redacted len={len(self.cleartext)}>)"
+
 
 @dataclass
 class RequestTokenizer:

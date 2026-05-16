@@ -119,6 +119,7 @@ export function buildTestApp(deps: {
   anthropic?: AnthropicMessagesClient;
   policies?: import('../src/policy/resolver.js').PolicyResolver;
   audit?: import('@kisaesdevlab/vibe-shield-schema').AuditLogger;
+  adminKey?: string;
 }) {
   const apiKeys = deps.apiKeys ?? new ApiKeyStore(deps.handle.db);
   const sessions = deps.sessions ?? new SessionManager(deps.handle.db);
@@ -137,6 +138,7 @@ export function buildTestApp(deps: {
     sessionTtlMinutes: 60,
     ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
     ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
+    ...(deps.adminKey !== undefined ? { adminKey: deps.adminKey } : {}),
   });
 }
 

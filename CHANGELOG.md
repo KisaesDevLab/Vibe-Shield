@@ -4,6 +4,42 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [1.1.3] — 2026-05-16
+
+### Added — aggressive code review pass
+
+Reading 172 source files across 4 workspaces (engine, gateway, schema, admin) — delegated to 4 parallel Explore agents and synthesized. Found 60+ raw findings; triaged to 9 actionable defects + 7 new regression tests. Full report at `.shield-build/REVIEW_REPORT_v1.1.3.md`.
+
+### Security
+
+- **`apps/gateway/src/config.ts`** — URL protocol allowlists for `DATABASE_URL` (postgres:/postgresql:), `REDIS_URL` (redis:/rediss:), `ENGINE_URL` (http:/https:). Blocks `file://`, `javascript://`, `gopher://`, etc. from sneaking in via partially-attacker-controlled orchestration env. 11 new vitest cases.
+- **`apps/gateway/src/middleware/correlation-id.ts`** — CRLF + length sanitization on `x-correlation-id` header. Defense-in-depth — Node's HTTP parser already rejects CRLF at the wire, but this guards in-process direct invocation. Regex `/^[A-Za-z0-9_:.-]{1,128}$/`. 7 new vitest cases.
+- **`packages/schema/src/crypto/kek.ts`** — `loadKek()` deletes `process.env.VS_KEK` after reading. Prevents recovery via `/proc/self/environ`, child-process env inheritance, debug tools. Caller-supplied envs (tests) NOT mutated. 2 new vitest cases.
+
+### Audit hygiene
+
+- **`apps/engine/app/tokenizer/deterministic.py`** — `TokenAllocation.__repr__` masks `cleartext`. Default dataclass repr would print cleartext if anything stringifies the object via stray `f"{allocation}"` log call.
+- **`apps/engine/app/image/pipeline.py`** — `ImageRedactionResult.__repr__` masks `tokens` cleartext + `masked_image_bytes` blob. Same posture + avoids dumping image bytes into logs. 3 new pytest cases for both reprs.
+
+### API contract / documentation
+
+- **`apps/gateway/src/routes/openapi.ts`** — documents all 6 `/v1/admin/*` endpoints (api-keys list/issue/revoke, audit, recognizer-misses, anthropic probe, policies). Adds `adminKey` security scheme + 3 new schemas (`ApiKeyRow`, `AuditRow`, `RecognizerMissRow`). OpenAPI `info.version` bumped `0.1.0` → `1.1.3`.
+- **`BUILD_PLAN.md`** — `Node.js 20` → `Node.js 24` (reconciles long-standing drift noted in user memory).
+- **`README.md`** — Redis dev port updated `6379` → `6395`; `REDIS_PORT` override documented.
+
+### Tests
+
+7 new regression tests pinning the cumulative round-1 / round-2 / review fixes:
+- `apps/gateway/tests/error-envelope.test.ts` (+2): Retry-After header on HttpError; rounds + clamps to 1
+- `apps/gateway/tests/admin-routes.test.ts` (+5, new file): admin route reachable with X-Admin-Key only (regression for Defect #4); cleartext-key-once; idempotent revoke
+- Plus the 11 + 7 + 2 + 3 = 23 unit-test cases under "Security" / "Audit hygiene" above.
+
+Suite total grew gateway 52 → 72, schema 38 → 40, engine 314 → 317.
+
+### Spend-cap race documented (deferred to v1.2)
+
+`SpendTracker.checkCap()` and `record()` are not atomic — under sustained concurrency, N requests can pass the check before any record, producing worst-case overage of N × max-per-call cost. Sub-cent on Haiku, single-digit cents on Opus. v1.2 fix path: serializable txn with `SELECT ... FOR UPDATE` on the aggregate, or Redis pre-reservation. Inline comment documents both options.
+
 ## [1.1.0] — 2026-05-15
 
 Closes 9 of the 12 v1.1 backlog items from the post-v1.0 punch list (§3 in the original `What's left to build` survey). The remaining three (§3.5 spend-cap webhook alert, §3.6 streaming SSE recorded-fixture coverage, §3.8 PolicyResolver cache invalidation) are operational refinements that don't change the user-facing surface; they roll forward to v1.2.

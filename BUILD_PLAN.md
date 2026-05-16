@@ -33,7 +33,7 @@ The build is not "add Presidio and ship." It is the technical implementation of 
 
 | Component | Language | Purpose |
 |-----------|----------|---------|
-| `vibe-shield-gateway` | Node.js 20 + TypeScript + Express | Public API. Anthropic Messages-compatible. Orchestrates redact → Claude → re-identify. |
+| `vibe-shield-gateway` | Node.js 24 + TypeScript + Express | Public API. Anthropic Messages-compatible. Orchestrates redact → Claude → re-identify. |
 | `vibe-shield-engine` | Python 3.12 + FastAPI + Presidio | Internal-only redaction engine. NER, custom recognizers, regex backstops, tokenization. |
 | `vibe-shield-admin` | React 18 + TypeScript + Vite + shadcn/ui | Admin UI: policies, audit log, QA dashboard, recognizer tuning, validation runner. |
 | `@kisaesdevlab/vibe-shield-client` | TypeScript npm package | Drop-in SDK for Vibe apps. Mirrors `@anthropic-ai/sdk` shape so swaps are one line. |
@@ -488,7 +488,7 @@ Hard rules:
 4. Tests must cover recall + precision against qa/corpus/ before merge.
 5. Every recognizer change updates compliance/recognizers.md.
 
-Stack: Node.js 20 + TypeScript (gateway), Python 3.12 + FastAPI + Presidio
+Stack: Node.js 24 + TypeScript (gateway), Python 3.12 + FastAPI + Presidio
 (engine), React 18 + Vite (admin), Postgres 16, Redis 7. PolyForm Internal
 Use 1.0.0 license. Multi-arch GHCR images. Integrates with Vibe Appliance.
 

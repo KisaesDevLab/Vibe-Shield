@@ -8,7 +8,7 @@ import express from 'express';
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 
-import { errorHandler } from '../src/errors.js';
+import { errorHandler, HttpError } from '../src/errors.js';
 
 function buildApp(): express.Express {
   const app = express();
@@ -55,5 +55,42 @@ describe('errorHandler', () => {
     expect(r.status).toBe(500);
     expect(r.body.error.type).toBe('api_error');
     expect(r.body.error.message).toBe('Internal server error');
+  });
+
+  it('sets Retry-After header on HttpError subclasses with retryAfterSeconds (regression: Defect #6)', async () => {
+    // v1.1.3 §review pins the Defect #6 fix from round 2: any
+    // HttpError subclass exposing `retryAfterSeconds` must surface a
+    // Retry-After response header per RFC 6585.
+    class Throttled extends HttpError {
+      readonly retryAfterSeconds = 42;
+      constructor() {
+        super(429, 'rate_limit_error', 'rate limit exceeded: 5/min');
+        this.name = 'Throttled';
+      }
+    }
+    const app = express();
+    app.get('/throttled', (_req, _res, next) => {
+      next(new Throttled());
+    });
+    app.use(errorHandler);
+    const r = await request(app).get('/throttled');
+    expect(r.status).toBe(429);
+    expect(r.headers['retry-after']).toBe('42');
+    expect(r.body.error.type).toBe('rate_limit_error');
+  });
+
+  it('rounds Retry-After up and clamps to a minimum of 1 second', async () => {
+    class Throttled extends HttpError {
+      constructor(readonly retryAfterSeconds: number) {
+        super(429, 'rate_limit_error', 'limited');
+      }
+    }
+    const app = express();
+    app.get('/zero', (_req, _res, next) => {
+      next(new Throttled(0.4));
+    });
+    app.use(errorHandler);
+    const r = await request(app).get('/zero');
+    expect(r.headers['retry-after']).toBe('1');
   });
 });
