@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING
 
 from app.analyzer import EntitySpan
 from app.backstops.base import Backstop, BackstopHit, BackstopMiss
@@ -21,6 +22,9 @@ from app.backstops.phone import PhoneBackstop
 from app.backstops.routing import RoutingBackstop
 from app.backstops.ssn import SsnBackstop
 from app.logging import get_logger
+
+if TYPE_CHECKING:
+    from app.recognizers.protected_ranges import ProtectedRange
 
 MissHandler = Callable[[BackstopMiss], None]
 
@@ -48,6 +52,13 @@ def _overlaps(hit: BackstopHit, span: EntitySpan) -> bool:
     return not (hit.end <= span.start or span.end <= hit.start)
 
 
+def _hit_in_protected_range(hit: BackstopHit, ranges: list[ProtectedRange]) -> bool:
+    for r in ranges:
+        if not (hit.end <= r.start or r.end <= hit.start):
+            return True
+    return False
+
+
 def _default_miss_handler(miss: BackstopMiss) -> None:
     # Goes through the structured logger. The allowlist drops any field
     # not on the safe set, so we have to use a method whose extras *are*
@@ -73,28 +84,43 @@ class BackstopLayer:
         self,
         text: str,
         existing_spans: list[EntitySpan],
+        protected_ranges: list[ProtectedRange] | None = None,
     ) -> list[EntitySpan]:
         """Return ``existing_spans`` augmented with backstop catches.
 
         Side effect: every catch that doesn't overlap an existing span is
         a miss and gets sent to ``miss_handler``.
         """
-        spans, _misses = self.apply_with_misses(text, existing_spans)
+        spans, _misses = self.apply_with_misses(
+            text, existing_spans, protected_ranges=protected_ranges
+        )
         return spans
 
     def apply_with_misses(
         self,
         text: str,
         existing_spans: list[EntitySpan],
+        protected_ranges: list[ProtectedRange] | None = None,
     ) -> tuple[list[EntitySpan], list[BackstopMiss]]:
         """Same as ``apply`` but also returns the misses for the
         caller (in addition to invoking ``miss_handler`` for the
         log/metric path). Used by the /redact route so the gateway can
-        persist misses to ``vs_recognizer_misses``."""
+        persist misses to ``vs_recognizer_misses``.
+
+        ``protected_ranges`` (v1.1) is the over-redaction prevention
+        layer: any backstop hit that overlaps a protected range is
+        skipped silently. It's not a "miss" — it's a known-non-PII
+        region we deliberately don't redact (e.g., an SSN-shaped digit
+        run inside ``$123-45-6789.00`` which is implausible but exemplifies
+        the rule).
+        """
+        ranges = protected_ranges or []
         new_spans: list[EntitySpan] = []
         misses: list[BackstopMiss] = []
         for bs in self.backstops:
             for hit in bs.find(text):
+                if ranges and _hit_in_protected_range(hit, ranges):
+                    continue
                 if any(_overlaps(hit, sp) for sp in existing_spans):
                     continue
                 if any(_overlaps(hit, sp) for sp in new_spans):

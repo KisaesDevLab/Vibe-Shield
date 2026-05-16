@@ -4,6 +4,38 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — v1.1 §3.1: B1 precision fix (cross-type span deconfliction + protected ranges)
+
+Closes the v1.0 B1 blocker. Two new layers in the engine analyzer pipeline; CHANGELOG-summary measurements on `qa/reports/baseline-v1.1-lg.json` (46 fixtures, `en_core_web_lg`):
+
+| Entity | v1.0 (sm) | v1.1 (lg) |
+|---|---|---|
+| `US_BANK_ACCOUNT` precision | 0.45 | **1.00** |
+| `PHONE_NUMBER` precision | 0.77 | **1.00** |
+| `PERSON` precision | 0.92 | **1.00** |
+
+Recall preserved at 1.00 across all measured tier-A entities (SSN, EIN, ROUTING, EMAIL, CREDIT_CARD).
+
+- **`apps/engine/app/recognizers/protected_ranges.py`** (new). Computes contiguous text regions for currency / dates / tax-form numbers up front; the whitelist post-processor and backstop layer both consult these ranges. **Any Presidio span or backstop hit overlapping a protected range by even one character is dropped.** Closes the over-redaction case where `US_BANK_ACCOUNT` extracted `4,201.33` from inside `$4,201.33` (the digit-run substring didn't match the v1.0 substring-equality whitelist). `US_DOB` is exempt from the drop — context promotion already vetted it.
+- **`apps/engine/app/recognizers/deconflict.py`** (new). Tier-priority cross-type span deconfliction. Presidio's recognizers cross-fire on the same digit run with different entity types — a 9-digit ABA routing number arrives back as `US_BANK_ROUTING` (correct) plus `US_BANK_ACCOUNT`, `PHONE_NUMBER`, `US_DRIVER_LICENSE`, and `US_BANK_NUMBER` (all false positives). Each duplicate counts as a precision-killing FP. The deconflict step keeps only the highest-priority span per overlapping cluster:
+  - **Tier A (90)**: SSN, EIN, BANK_ROUTING, EMAIL, DOB, BUSINESS_NAME, PASSPORT, ITIN, CREDIT_CARD
+  - **Tier B (60)**: PERSON, LOCATION, BANK_ACCOUNT, IBAN
+  - **Tier C (40)**: PHONE_NUMBER, URL
+  - **Tier D (10)**: DATE_TIME, US_DRIVER_LICENSE, BANK_NUMBER alias, AU/UK/IN/KR national IDs
+
+  DATE_TIME and US_DRIVER_LICENSE are tier D because both Presidio recognizers fire on any digit-shaped string. Real dates land in protected ranges; real driver licenses are caught by our context-aware US-state recognizer.
+- **`apps/engine/app/analyzer.py`** — wires the two new layers into both `analyze` and `analyze_with_misses`. Pipeline order: Presidio → `compute_protected_ranges` → `apply_whitelists(...)` → `deconflict_overlapping_spans(...)` → `BackstopLayer.apply_with_misses(...)`. Each step has its own EngineUnavailable error path so a failure anywhere fails-closed.
+- **`qa/corpus/synthetic/statements.py`** (new). 12 new synthetic fixtures covering Chase personal/business checking, Bank of America personal, Wells Fargo small-business, AmEx business credit card. Header excerpts only (multi-line free-form addresses omitted to keep the harness signal clean). All names from Faker; account numbers format-valid but never issued; CREDIT_CARD uses Stripe's documented AmEx test card `378282246310005` (15 digits, Luhn-valid).
+- **`qa/recall_precision.py`** — corpus is now `bookkeeping_fixtures() + statement_fixtures()` (46 total). `PRECISION_GATE_EXEMPT` reduced to the empty set — the 0.90 precision floor now applies to every measured entity unconditionally. `QA_SPACY_MODEL` env var lets the harness target lg without code edits.
+- **27 new pytest cases** (`tests/test_protected_ranges.py`, `tests/test_deconflict.py`). Pin: span overlap policy, tier priority, US_DOB exemption, AmEx 15-digit Luhn, backstop-skipped-in-protected-range, miss-not-recorded-when-skipped.
+- **`compliance/recognizers.md`** — new sections documenting protected ranges + cross-type deconfliction. Recognizer table now reports measured recall/precision (1.00 / 1.00 on lg) instead of `TBD — Phase 12` placeholders.
+- **`.shield-build/blockers.md`** — B1 marked **RESOLVED v1.1** with the corrected root cause (cross-type cross-fire, not currency over-redaction as initially hypothesized).
+
+### Operational
+
+- `qa/reports/baseline-v1.1.json` (sm) and `qa/reports/baseline-v1.1-lg.json` (lg) — committed baselines for the regression gate.
+- `QA_SPACY_MODEL=en_core_web_lg uv run --with pip python -m qa.recall_precision` — local lg run.
+
 ## [1.0.1] — 2026-05-15
 
 ### Added — production-readiness punch list (§1)
