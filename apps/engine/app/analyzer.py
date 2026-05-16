@@ -107,6 +107,8 @@ class AnalyzerService:
         # Imports here to avoid circular: errors imports logging; whitelists
         # and backstops import EntitySpan from this module.
         from app.errors import EngineUnavailable
+        from app.recognizers.deconflict import deconflict_overlapping_spans
+        from app.recognizers.protected_ranges import compute_protected_ranges
         from app.recognizers.whitelists import apply_whitelists
 
         try:
@@ -124,7 +126,16 @@ class AnalyzerService:
             raise EngineUnavailable("presidio analysis failed") from exc
 
         try:
-            kept = apply_whitelists(text, spans)
+            ranges = compute_protected_ranges(text)
+        except Exception as exc:
+            logger.error(
+                "protected_ranges_failed",
+                extra={"error_class": type(exc).__name__},
+            )
+            raise EngineUnavailable("protected ranges failed") from exc
+
+        try:
+            kept = apply_whitelists(text, spans, protected_ranges=ranges)
         except Exception as exc:
             logger.error(
                 "whitelist_failed",
@@ -133,7 +144,18 @@ class AnalyzerService:
             raise EngineUnavailable("whitelist failed") from exc
 
         try:
-            spans_with_backstops, _misses = self._backstop_layer.apply_with_misses(text, kept)
+            kept = deconflict_overlapping_spans(kept)
+        except Exception as exc:
+            logger.error(
+                "deconflict_failed",
+                extra={"error_class": type(exc).__name__},
+            )
+            raise EngineUnavailable("deconflict failed") from exc
+
+        try:
+            spans_with_backstops, _misses = self._backstop_layer.apply_with_misses(
+                text, kept, protected_ranges=ranges
+            )
             return spans_with_backstops
         except Exception as exc:
             logger.error(
@@ -157,6 +179,8 @@ class AnalyzerService:
         backstops caught something Presidio missed.
         """
         from app.errors import EngineUnavailable
+        from app.recognizers.deconflict import deconflict_overlapping_spans
+        from app.recognizers.protected_ranges import compute_protected_ranges
         from app.recognizers.whitelists import apply_whitelists
 
         try:
@@ -170,12 +194,22 @@ class AnalyzerService:
             logger.error("presidio_analyze_failed", extra={"error_class": type(exc).__name__})
             raise EngineUnavailable("presidio analysis failed") from exc
         try:
-            kept = apply_whitelists(text, spans)
+            ranges = compute_protected_ranges(text)
+        except Exception as exc:
+            logger.error("protected_ranges_failed", extra={"error_class": type(exc).__name__})
+            raise EngineUnavailable("protected ranges failed") from exc
+        try:
+            kept = apply_whitelists(text, spans, protected_ranges=ranges)
         except Exception as exc:
             logger.error("whitelist_failed", extra={"error_class": type(exc).__name__})
             raise EngineUnavailable("whitelist failed") from exc
         try:
-            return self._backstop_layer.apply_with_misses(text, kept)
+            kept = deconflict_overlapping_spans(kept)
+        except Exception as exc:
+            logger.error("deconflict_failed", extra={"error_class": type(exc).__name__})
+            raise EngineUnavailable("deconflict failed") from exc
+        try:
+            return self._backstop_layer.apply_with_misses(text, kept, protected_ranges=ranges)
         except Exception as exc:
             logger.error("backstop_failed", extra={"error_class": type(exc).__name__})
             raise EngineUnavailable("backstop failed") from exc

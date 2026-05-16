@@ -19,8 +19,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 from app.analyzer import EntitySpan
+
+if TYPE_CHECKING:
+    from app.recognizers.protected_ranges import ProtectedRange
 
 # Currency. Match $ followed by digits with optional thousands separators
 # and optional decimal; minus may precede or follow $.
@@ -108,8 +112,13 @@ def _is_tax_form_prefix(text: str, full: str, end: int) -> bool:
     return bool(_TAX_FORM_SUFFIX_AT.match(full[end:]))
 
 
-def apply_whitelists(text: str, spans: Iterable[EntitySpan]) -> list[EntitySpan]:
-    """Drop any span whose substring matches the whitelist.
+def apply_whitelists(
+    text: str,
+    spans: Iterable[EntitySpan],
+    protected_ranges: list[ProtectedRange] | None = None,
+) -> list[EntitySpan]:
+    """Drop any span whose substring matches the whitelist OR overlaps a
+    pre-computed protected range.
 
     Suppression is unconditional on entity type — if the *text* matches a
     whitelist, the span is dropped no matter which recognizer flagged it.
@@ -117,10 +126,18 @@ def apply_whitelists(text: str, spans: Iterable[EntitySpan]) -> list[EntitySpan]
     can come back as ``DATE_TIME`` from one recognizer and ``US_BANK_ACCOUNT``
     from another. Both should be suppressed.
 
-    ``US_DOB`` is explicitly exempt — DOBs only fire when the
-    context-enhancement layer promotes them past the score threshold, so
-    a US_DOB hit means the surrounding cue confirmed it's a birth date.
+    ``protected_ranges`` (v1.1, B1 fix) is the over-redaction prevention
+    layer for spans that fall *inside* a known-non-PII region but whose
+    own substring doesn't match the whitelist regex — e.g., the digit
+    run ``4,201.33`` that BANK_ACCOUNT extracts from inside ``$4,201.33``.
+    Any overlap with a protected range drops the span.
+
+    ``US_DOB`` is explicitly exempt from both filters — DOBs only fire
+    when the context-enhancement layer promotes them past the score
+    threshold, so a US_DOB hit means the surrounding cue confirmed it's
+    a birth date.
     """
+    ranges = protected_ranges or []
     kept: list[EntitySpan] = []
     for span in spans:
         substr = text[span.start : span.end]
@@ -135,5 +152,17 @@ def apply_whitelists(text: str, spans: Iterable[EntitySpan]) -> list[EntitySpan]
             continue
         if is_currency(substr):
             continue
+        if ranges and _overlaps_any_range(span.start, span.end, ranges):
+            continue
         kept.append(span)
     return kept
+
+
+def _overlaps_any_range(start: int, end: int, ranges: list[ProtectedRange]) -> bool:
+    """Inline copy of ``protected_ranges.overlaps_any`` to avoid a
+    runtime import cycle (whitelists.py is imported by analyzer.py and
+    by protected_ranges.py)."""
+    for r in ranges:
+        if not (end <= r.start or r.end <= start):
+            return True
+    return False

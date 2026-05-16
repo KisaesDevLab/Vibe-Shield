@@ -30,7 +30,7 @@ from pathlib import Path
 
 from app.analyzer import AnalyzerService, EntitySpan
 from app.config import Settings
-from qa.corpus.synthetic import CorpusFixture, ExpectedSpan, bookkeeping_fixtures
+from qa.corpus.synthetic import CorpusFixture, ExpectedSpan, all_fixtures
 
 REPORTS_DIR = Path(__file__).parent / "reports"
 
@@ -44,19 +44,16 @@ THRESHOLDS_RECALL = {
     "EMAIL_ADDRESS": 0.95,
     "PHONE_NUMBER": 0.95,
     "BUSINESS_NAME": 0.85,  # NER-driven; tighter cap is unrealistic for v1
+    "CREDIT_CARD": 0.99,
 }
 
 # Precision floor (single value applied per entity type).
 PRECISION_FLOOR = 0.90
 
-# Entity types where precision is below floor and is a known v1.1 work
-# item (over-redaction, never under-redaction — see
-# .shield-build/blockers.md::B1). CI skips the precision gate for these;
-# recall must still pass.
-PRECISION_GATE_EXEMPT: frozenset[str] = frozenset({
-    "US_BANK_ACCOUNT",
-    "PHONE_NUMBER",
-})
+# v1.1: B1 blocker resolved (see .shield-build/blockers.md). The precision
+# floor now applies to every measured entity unconditionally. Kept as an
+# empty set so the gate logic below stays uniform.
+PRECISION_GATE_EXEMPT: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -174,13 +171,15 @@ def evaluate(
 
 
 def main() -> int:
-    settings = Settings(spacy_model="en_core_web_sm", log_level="warning")
+    import os
+    model = os.environ.get("QA_SPACY_MODEL", "en_core_web_sm")
+    settings = Settings(spacy_model=model, log_level="warning")
     analyzer = AnalyzerService(
         spacy_model=settings.spacy_model, language=settings.default_language
     )
     analyzer.load()
 
-    fixtures = bookkeeping_fixtures()
+    fixtures = all_fixtures()
     scores = evaluate(analyzer, fixtures)
 
     # Print + serialize.
