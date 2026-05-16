@@ -50,7 +50,7 @@ def test_image_redaction_result_repr_masks_tokens() -> None:
         masked_regions=(
             MaskedRegion(
                 entity_type="PERSON",
-                token="<PERSON_1>",  # noqa: S106
+                token="<PERSON_1>",
                 x=0, y=0, width=10, height=10,
             ),
         ),
