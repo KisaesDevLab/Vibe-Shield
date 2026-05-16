@@ -1,0 +1,93 @@
+# Vibe Shield — Caddy reverse-proxy snippet for the Vibe Appliance.
+#
+# Paste these two site blocks into the appliance's Caddyfile.
+# Assumes the appliance already has a wildcard cert for *.<domain>
+# (via Caddy's built-in ACME or external certs).
+#
+# Posture:
+#   - Admin UI + Gateway are Tailscale-only by default (matches BUILD_PLAN §21).
+#     Switch to `lan_only` or remove the matcher for LAN-wide / public access.
+#   - Engine is NEVER routed externally. Caddy has no engine block.
+#
+# Customize:
+#   - Replace `{$VIBE_DOMAIN}` with your appliance domain (e.g., firm.local).
+#   - Adjust the `tailscale_only` snippet to match your Tailscale CIDR.
+#   - For LAN-only deployments, use `@lan` instead of `@tailscale`.
+
+# Reusable matcher: only allow Tailscale 100.x range. Adjust to your
+# tailnet's actual CIDR if you've customized it.
+(tailscale_only) {
+  @tailscale {
+    remote_ip 100.64.0.0/10
+  }
+  respond /* "403 forbidden" 403 {
+    close
+  }
+  handle @tailscale {
+    {args[0]}
+  }
+}
+
+# ---- shield.<domain> — Admin UI -------------------------------------
+shield.{$VIBE_DOMAIN} {
+  # Comment this out to expose the admin UI on LAN.
+  import tailscale_only
+
+  encode gzip zstd
+
+  # Same-origin: admin UI fetches /v1/admin/* from this host.
+  # Route /v1/admin/* to the gateway container; everything else is
+  # the static SPA.
+  handle /v1/admin/* {
+    reverse_proxy vibe-shield-gateway:8080
+  }
+
+  # SPA: serve the built admin assets. The admin image bundles a
+  # static file server on :80; if you prefer Caddy to serve them
+  # directly, mount the build dir and uncomment the file_server block.
+  reverse_proxy vibe-shield-admin:80
+
+  # Headers — admin UI shouldn't be embeddable or sniffed.
+  header {
+    X-Frame-Options DENY
+    X-Content-Type-Options nosniff
+    Referrer-Policy no-referrer
+    # No HSTS preload — the appliance domain is internal.
+    Strict-Transport-Security "max-age=31536000"
+  }
+
+  log {
+    output file /var/log/caddy/vibe-shield-admin.log
+    format json
+  }
+}
+
+# ---- gateway.shield.<domain> — Anthropic-shaped API -----------------
+# This is what Vibe apps (MyBooks, Trial Balance, Tax Research,
+# Converter, etc.) point @anthropic-ai/sdk's baseURL at. Internal
+# container-to-container traffic should use http://vibe-shield-gateway:8080
+# directly instead of going through Caddy.
+gateway.shield.{$VIBE_DOMAIN} {
+  # Comment this out to expose the gateway on LAN.
+  import tailscale_only
+
+  # Pass through everything to the gateway. Auth is the gateway's
+  # job (Bearer vs_live_* for /v1/*; X-Admin-Key for /v1/admin/*).
+  reverse_proxy vibe-shield-gateway:8080 {
+    # The gateway sets vs-session-id + Retry-After + x-correlation-id;
+    # let them through.
+    header_up Host {host}
+    header_up X-Forwarded-Proto {scheme}
+    header_up X-Forwarded-For {remote_host}
+  }
+
+  header {
+    X-Content-Type-Options nosniff
+    Strict-Transport-Security "max-age=31536000"
+  }
+
+  log {
+    output file /var/log/caddy/vibe-shield-gateway.log
+    format json
+  }
+}

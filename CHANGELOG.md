@@ -4,6 +4,20 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [1.1.4] — 2026-05-16
+
+### Added — appliance integration kit (Phase 21 §A: Shield-side surfaces)
+
+Per `.shield-build/open-decisions.md::D1`, Vibe Shield ships only the appliance-side surfaces; the appliance manifest itself lives in the Appliance repo. v1.1.4 packages those surfaces into a copy-paste integration kit so the Appliance team can land Shield in under 10 minutes.
+
+- **`appliance/docker-compose.fragment.yml`** — 3 services (engine, gateway, admin) + 1 one-shot (`vibe-shield-migrate`, `profiles: [bootstrap]`). Reuses the appliance's existing `vibe-network` + Postgres + Redis (env-configurable). Image tag pinned via `${VIBE_SHIELD_VERSION}`; defaults to v1.1.3.
+- **`appliance/caddy.snippet`** — 2 site blocks: `shield.<domain>` (admin SPA, Tailscale-only by default; path-routes `/v1/admin/*` to the gateway) and `gateway.shield.<domain>` (Anthropic-shaped API, Tailscale-only). Reusable `tailscale_only` matcher; commentable for LAN-wide deployments.
+- **`appliance/env.example`** — every env var documented with required-vs-optional + generation commands. Required: `ANTHROPIC_API_KEY`, `VS_KEK`, `VIBE_SHIELD_DATABASE_URL`, `VIBE_SHIELD_REDIS_URL`, `VIBE_SHIELD_ADMIN_KEY`. 11 optional tunables with defaults.
+- **`appliance/INSTALL.md`** — operator one-pager: prereqs, 8-step install, upgrade path, routine ops table, uninstall, hard-rule posture for auditors, troubleshooting table.
+- **`packages/schema/scripts/wipe-vault.ts`** — secure-uninstall script. Triple-gated: `--apply` flag + `VIBE_SHIELD_WIPE_CONFIRM=WIPE-VAULT` env + interactive row-count match (or `--audit-rows=N` for unattended). Bounded to `vs_*` tables + the `drizzle` schema; can't wipe an unrelated DB. `make wipe-vault-dry` / `make wipe-vault-apply` targets.
+- **`apps/admin/Dockerfile`** (new) — multi-stage Vite build → nginx serve. Final image **74 MB**. SPA fall-through to `/index.html` for client-side routing; long-cache on hashed `/assets/*`.
+- **`.github/workflows/release.yml`** — admin added to the multi-arch GHCR build matrix; `ghcr.io/kisaesdevlab/vibe-shield-admin:v1.1.4` ships on the v1.1.4 tag.
+
 ## [1.1.3] — 2026-05-16
 
 ### Added — aggressive code review pass
