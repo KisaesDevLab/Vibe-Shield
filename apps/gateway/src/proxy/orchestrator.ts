@@ -233,6 +233,22 @@ export class ProxyOrchestrator {
       } catch (err) {
         if (err instanceof RateLimitExceededError) {
           rateLimitBreaches.inc({ tenant_id: auth.tenantId, app_id: auth.appId });
+          // v1.1.2 §round-2 Defect #8: emit rate_limit_breached audit row.
+          // Best-effort — never fail the request because the audit write
+          // failed (we already have the Prometheus metric).
+          if (this.deps.audit !== undefined) {
+            void this.deps.audit
+              .append({
+                tenantId: auth.tenantId,
+                eventType: 'rate_limit_breached',
+                payload: {
+                  app_id: auth.appId,
+                  limit: err.limit,
+                  retry_after_seconds: err.retryAfterSeconds,
+                },
+              })
+              .catch(() => undefined);
+          }
           throw new RateLimitHttpError(err.limit, err.retryAfterSeconds);
         }
         throw err;
@@ -249,6 +265,17 @@ export class ProxyOrchestrator {
       } catch (err) {
         if (err instanceof SpendCapExceededError) {
           spendCapBreaches.inc({ tenant_id: auth.tenantId });
+          // v1.1.2 §round-2 Defect #7: emit spend_cap_breached audit row.
+          // Best-effort; see Defect #8 above for rationale.
+          if (this.deps.audit !== undefined) {
+            void this.deps.audit
+              .append({
+                tenantId: auth.tenantId,
+                eventType: 'spend_cap_breached',
+                payload: { app_id: auth.appId },
+              })
+              .catch(() => undefined);
+          }
           throw new PermissionError(
             'monthly spend cap reached for this tenant',
           );

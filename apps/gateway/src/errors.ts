@@ -98,6 +98,24 @@ export class EngineUnavailableError extends HttpError {
 }
 
 /**
+ * Marker interface for HttpError subclasses that want a Retry-After
+ * response header set. v1.1.2 §round-2 Defect #6: RFC 6585 says 429
+ * SHOULD include Retry-After; without it clients can't implement
+ * principled backoff. RateLimitHttpError implements this; the error
+ * handler reads ``retryAfterSeconds`` and sets the header.
+ */
+export interface HasRetryAfter {
+  readonly retryAfterSeconds: number;
+}
+
+function hasRetryAfter(err: unknown): err is HttpError & HasRetryAfter {
+  return (
+    err instanceof HttpError &&
+    typeof (err as { retryAfterSeconds?: unknown }).retryAfterSeconds === 'number'
+  );
+}
+
+/**
  * Express error-handling middleware.
  *
  * - Known ``HttpError`` subclasses → their declared status + envelope.
@@ -111,6 +129,10 @@ export const errorHandler: ErrorRequestHandler = (err: unknown, req: Request, re
   if (err instanceof HttpError) {
     if (logger !== undefined) {
       logger.error({ error_class: err.name, status: err.status }, 'http_error');
+    }
+    if (hasRetryAfter(err)) {
+      // RFC 6585: Retry-After value is delta-seconds (integer).
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil(err.retryAfterSeconds))));
     }
     res.status(err.status).json(err.toEnvelope());
     return;
