@@ -83,7 +83,7 @@ function decodeKek(value: string, label: string): Buffer {
 async function readKekFromStdin(label: string): Promise<Buffer> {
   const rl = createInterface({ input: stdin, output: stdout });
   try {
-    // eslint-disable-next-line no-console
+     
     console.error(`Enter ${label} (base64-encoded 32 bytes):`);
     const value = await rl.question('> ');
     return decodeKek(value, label);
@@ -139,7 +139,7 @@ async function main(): Promise<void> {
     const rows = await db
       .select({ tenantId: tenantKeys.tenantId, wrappedDek: tenantKeys.wrappedDek })
       .from(tenantKeys);
-    // eslint-disable-next-line no-console
+     
     console.error(`Found ${rows.length.toString()} tenant key(s).`);
 
     if (flags.dryRun) {
@@ -151,20 +151,20 @@ async function main(): Promise<void> {
           processed += 1;
         } catch {
           failed += 1;
-          // eslint-disable-next-line no-console
+           
           console.error(`  X tenant=${row.tenantId} cannot unwrap with OLD_VS_KEK`);
         }
       }
-      // eslint-disable-next-line no-console
+       
       console.error(
         `\nDry-run summary: ${processed.toString()} unwrappable, ${failed.toString()} failed.`,
       );
       if (failed > 0) {
-        // eslint-disable-next-line no-console
+         
         console.error('Refusing to proceed. Re-check OLD_VS_KEK.');
         process.exit(2);
       }
-      // eslint-disable-next-line no-console
+       
       console.error('Dry-run OK. Re-run with --apply (same env) to commit.');
     } else {
       // --apply: re-wrap every row in a single transaction. If any
@@ -180,9 +180,9 @@ async function main(): Promise<void> {
           processed += 1;
         }
       });
-      // eslint-disable-next-line no-console
+       
       console.error(`\nApplied: re-wrapped ${processed.toString()} tenant key(s).`);
-      // eslint-disable-next-line no-console
+       
       console.error(
         'Now update VS_KEK in the appliance secret manager and restart the gateway.',
       );
@@ -195,7 +195,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  // eslint-disable-next-line no-console
+   
   console.error(`rotate-kek failed: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });

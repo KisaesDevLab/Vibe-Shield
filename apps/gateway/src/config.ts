@@ -6,13 +6,36 @@
 
 import { z } from 'zod';
 
+/**
+ * Validate that a string is a URL with one of the allowed protocols.
+ * v1.1.3 §review (S3): blocks file://, javascript://, gopher://, etc.
+ * from sneaking into DATABASE_URL / REDIS_URL / ENGINE_URL if the env
+ * is partially attacker-controlled (e.g., orchestration mis-config).
+ */
+function urlWithProtocol(allowed: readonly string[], envName: string) {
+  return z
+    .string()
+    .min(1, `${envName} is required`)
+    .refine(
+      (v) => {
+        try {
+          const u = new URL(v);
+          return allowed.includes(u.protocol);
+        } catch {
+          return false;
+        }
+      },
+      `${envName} must use one of: ${allowed.join(', ')}`,
+    );
+}
+
 const configSchema = z.object({
   HOST: z.string().default('127.0.0.1'),
   PORT: z.coerce.number().int().positive().default(8080),
-  DATABASE_URL: z
-    .string()
-    .min(1, 'DATABASE_URL is required'),
-  ENGINE_URL: z.string().url().default('http://127.0.0.1:8000'),
+  DATABASE_URL: urlWithProtocol(['postgres:', 'postgresql:'], 'DATABASE_URL'),
+  ENGINE_URL: urlWithProtocol(['http:', 'https:'], 'ENGINE_URL').default(
+    'http://127.0.0.1:8000',
+  ),
   /** AES-256-GCM master key, 32 bytes base64. Required for token-vault use. */
   VS_KEK: z.string().min(1, 'VS_KEK is required'),
   /** Commercial Anthropic API key. Verified at startup via /v1/models. */
@@ -31,7 +54,9 @@ const configSchema = z.object({
   /** Default session idle TTL in minutes. */
   SESSION_TTL_MINUTES: z.coerce.number().int().positive().default(60),
   /** Redis URL for rate-limit counters. */
-  REDIS_URL: z.string().default('redis://127.0.0.1:6379/0'),
+  REDIS_URL: urlWithProtocol(['redis:', 'rediss:'], 'REDIS_URL').default(
+    'redis://127.0.0.1:6379/0',
+  ),
   /** Per-(tenant, app) request cap per minute. */
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(60),
   /** Per-tenant monthly spend cap in micro-dollars (USD * 1e6). */

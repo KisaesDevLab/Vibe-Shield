@@ -41,4 +41,28 @@ describe('kek loading', () => {
       expect((err as Error).message).toContain('VS_KEK');
     }
   });
+
+  it('clears VS_KEK from process.env after loading (regression: review S8)', () => {
+    // v1.1.3 §review (S8): the KEK env var should be removed from
+    // process.env after loading so it can't be recovered via
+    // /proc/self/environ or child-process env inheritance.
+    const raw = randomBytes(KEY_LENGTH);
+    const original = process.env[KEK_ENV_VAR];
+    try {
+      process.env[KEK_ENV_VAR] = formatKekForEnv(raw);
+      loadKek(); // default: process.env
+      expect(process.env[KEK_ENV_VAR]).toBeUndefined();
+    } finally {
+      if (original !== undefined) process.env[KEK_ENV_VAR] = original;
+    }
+  });
+
+  it('does NOT mutate a caller-supplied env object', () => {
+    // Symmetry: when callers pass their own env (e.g., tests), we
+    // shouldn't delete from it — only the process.env singleton.
+    const raw = randomBytes(KEY_LENGTH);
+    const env: NodeJS.ProcessEnv = { [KEK_ENV_VAR]: formatKekForEnv(raw) };
+    loadKek(env);
+    expect(env[KEK_ENV_VAR]).toBeDefined();
+  });
 });

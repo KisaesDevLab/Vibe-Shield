@@ -126,19 +126,56 @@ const spec = {
   openapi: '3.1.0',
   info: {
     title: 'Vibe Shield Gateway',
-    version: '0.1.0',
+    version: '1.1.3',
     description:
-      'Anthropic-Messages-compatible gateway. Requires Authorization: Bearer vs_live_… on every protected route.',
+      'Anthropic-Messages-compatible gateway. Requires Authorization: Bearer vs_live_… on every protected route. Admin routes under /v1/admin/* use X-Admin-Key instead.',
   },
   components: {
     securitySchemes: {
       bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'vs_live_*' },
+      adminKey: { type: 'apiKey', in: 'header', name: 'X-Admin-Key' },
     },
     schemas: {
       AnthropicError: errorSchema,
       MessagesRequest: messagesRequestSchema,
       Message: messagesResponseSchema,
       Session: sessionShape,
+      ApiKeyRow: {
+        type: 'object',
+        required: ['id', 'tenant_id', 'app_id', 'label', 'created_at'],
+        properties: {
+          id: { type: 'string', description: 'Hex-encoded key hash' },
+          tenant_id: { type: 'string' },
+          app_id: { type: 'string' },
+          label: { type: 'string' },
+          created_at: { type: 'string', format: 'date-time' },
+          last_used_at: { type: ['string', 'null'], format: 'date-time' },
+          revoked_at: { type: ['string', 'null'], format: 'date-time' },
+        },
+      },
+      AuditRow: {
+        type: 'object',
+        required: ['id', 'tenant_id', 'event_type', 'payload_hash', 'created_at'],
+        properties: {
+          id: { type: 'string' },
+          tenant_id: { type: 'string' },
+          session_id: { type: ['string', 'null'] },
+          event_type: { type: 'string' },
+          payload_hash: { type: 'string', description: 'Hex SHA-256' },
+          created_at: { type: 'string', format: 'date-time' },
+        },
+      },
+      RecognizerMissRow: {
+        type: 'object',
+        required: ['id', 'pattern', 'sample_hash', 'severity', 'created_at'],
+        properties: {
+          id: { type: 'string' },
+          pattern: { type: 'string' },
+          sample_hash: { type: 'string', description: 'SHA-256 truncated to 16 hex chars' },
+          severity: { type: 'string', enum: ['block', 'warn', 'allow'] },
+          created_at: { type: 'string', format: 'date-time' },
+        },
+      },
     },
   },
   security: [{ bearerAuth: [] }],
@@ -299,6 +336,183 @@ const spec = {
           },
           '403': { description: 'Active policy is not cpa-converter-output' },
           '404': { description: 'Session not found (or owned by another tenant)' },
+        },
+      },
+    },
+
+    // v1.1.3 §review (C5-C10): document the /v1/admin/* surface added
+    // in §3.3. Auth is X-Admin-Key (separate from tenant Bearer keys);
+    // admin is the appliance operator with full read access.
+    '/v1/admin/api-keys': {
+      get: {
+        summary: 'List all issued tenant API keys',
+        security: [{ adminKey: [] }],
+        responses: {
+          '200': {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'array',
+                  items: { $ref: '#/components/schemas/ApiKeyRow' },
+                },
+              },
+            },
+          },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+        },
+      },
+      post: {
+        summary: 'Issue a new tenant API key. Cleartext returned ONCE, never re-fetchable.',
+        security: [{ adminKey: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['tenantId', 'label'],
+                properties: {
+                  tenantId: { type: 'string' },
+                  appId: { type: 'string', default: 'default' },
+                  label: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': {
+            description: 'Created',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['id', 'key'],
+                  properties: {
+                    id: { type: 'string', description: 'Hex-encoded key hash' },
+                    key: { type: 'string', description: 'Cleartext API key (shown once)' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid body' },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+        },
+      },
+    },
+    '/v1/admin/api-keys/{id}': {
+      delete: {
+        summary: 'Revoke an API key by its hex hash. Idempotent.',
+        security: [{ adminKey: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '204': { description: 'Revoked' },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+          '404': { description: 'No matching key' },
+        },
+      },
+    },
+    '/v1/admin/audit': {
+      get: {
+        summary: 'List recent audit events. Returns hex payload hashes only; cleartext never persisted.',
+        security: [{ adminKey: [] }],
+        parameters: [
+          { name: 'tenant_id', in: 'query', schema: { type: 'string' } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', maximum: 500, default: 100 } },
+        ],
+        responses: {
+          '200': {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'array',
+                  items: { $ref: '#/components/schemas/AuditRow' },
+                },
+              },
+            },
+          },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+        },
+      },
+    },
+    '/v1/admin/recognizer-misses': {
+      get: {
+        summary: 'List recent backstop catches that Presidio missed. Sample hashes only.',
+        security: [{ adminKey: [] }],
+        parameters: [
+          { name: 'limit', in: 'query', schema: { type: 'integer', maximum: 500, default: 100 } },
+        ],
+        responses: {
+          '200': {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'array',
+                  items: { $ref: '#/components/schemas/RecognizerMissRow' },
+                },
+              },
+            },
+          },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+        },
+      },
+    },
+    '/v1/admin/anthropic/probe': {
+      post: {
+        summary: 'Re-run the Anthropic commercial-key probe. Use after key rotation.',
+        security: [{ adminKey: [] }],
+        responses: {
+          '200': {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['ok'],
+                  properties: {
+                    ok: { type: 'boolean' },
+                    reason: { type: 'string', description: 'consumer_key | unreachable | unknown — only when ok=false' },
+                  },
+                },
+              },
+            },
+          },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+        },
+      },
+    },
+    '/v1/admin/policies': {
+      get: {
+        summary: 'Read-only list of redaction / re-id policies. JSON editor deferred to v1.2.',
+        security: [{ adminKey: [] }],
+        responses: {
+          '200': {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    required: ['id', 'name', 'version', 'zdr_required'],
+                    properties: {
+                      id: { type: 'string' },
+                      name: { type: 'string' },
+                      version: { type: 'integer' },
+                      zdr_required: { type: 'boolean' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '401': { description: 'X-Admin-Key missing or invalid' },
         },
       },
     },

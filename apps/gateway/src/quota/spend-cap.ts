@@ -82,6 +82,15 @@ export class SpendTracker {
    * Check the cap before a call. Sums the current calendar month and
    * throws if the configured cap is reached. Per-tenant override
    * passed via ``cap``.
+   *
+   * Known race (v1.1.3 §review S4, deferred to v1.2): the check + the
+   * subsequent ``record()`` are not atomic. Under sustained
+   * concurrency, N requests can pass the check before any records,
+   * producing up to N * (max per-call cost) of overage. In practice
+   * that's sub-cent on Haiku, single-digit cents on Opus — acceptable
+   * for v1.1. v1.2 fix path: serializable transaction with
+   * ``SELECT ... FOR UPDATE`` on the spend_records aggregate, or a
+   * Redis pre-reservation pattern checked under a lease.
    */
   async checkCap(tenantId: string, cap?: bigint): Promise<void> {
     const ceiling = cap ?? this.defaultCap;

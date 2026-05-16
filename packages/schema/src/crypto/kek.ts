@@ -43,6 +43,15 @@ export function loadKek(env: NodeJS.ProcessEnv = process.env): Buffer {
       `${KEK_ENV_VAR} must be ${KEY_LENGTH.toString()} bytes of base64; got ${bytes.length.toString()}`,
     );
   }
+  // v1.1.3 §review (S8): remove the KEK from process.env after loading
+  // so it can't be recovered via /proc/self/environ, accidental child
+  // process spawn that inherits env, or debugging tools that dump env.
+  // The in-memory Buffer is the canonical reference from this point.
+  // Only delete from the same env object the caller passed in to keep
+  // tests with custom envs predictable.
+  if (env === process.env) {
+    delete env[KEK_ENV_VAR];
+  }
   return bytes;
 }
 

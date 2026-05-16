@@ -82,6 +82,22 @@ class ImageRedactionResult:
     """``(token, entity_type, cleartext)`` per allocation."""
     masked_regions: tuple[MaskedRegion, ...]
 
+    def __repr__(self) -> str:
+        # v1.1.3 §review (R1.3): default dataclass repr would print the
+        # full tokens tuple including cleartext if anything stringifies
+        # the result. Mask the cleartext + the image bytes (which we
+        # also want to keep out of incidental logs). Hashes + counts
+        # are non-PII and useful for diagnosis.
+        return (
+            f"ImageRedactionResult("
+            f"image_sha256={self.image_sha256!r}, "
+            f"masked_image_sha256={self.masked_image_sha256!r}, "
+            f"masked_image_bytes=<bytes len={len(self.masked_image_bytes)}>, "
+            f"redacted_text=<len={len(self.redacted_text)}>, "
+            f"tokens=<{len(self.tokens)} entries, cleartext redacted>, "
+            f"masked_regions=<{len(self.masked_regions)} regions>)"
+        )
+
 
 class FaceDetector(Protocol):
     """Detects faces in an image; returns regions to mask."""
