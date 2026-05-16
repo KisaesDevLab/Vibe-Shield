@@ -140,25 +140,67 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
             ],
         )
 
+    # Lazily-built singleton ImageRedactor. Constructing the Haar
+    # cascade + Tesseract config once at app start would be ideal, but
+    # we defer until first /redact-image hit so a missing system dep on
+    # an /analyze-only deployment doesn't kill startup.
+    _image_redactor: dict[str, ImageRedactor | None] = {"value": None}
+
+    def _get_image_redactor(a: AnalyzerService) -> ImageRedactor:
+        cached = _image_redactor["value"]
+        if cached is not None:
+            return cached
+        ocr = None
+        masker = None
+        face_detector = None
+        barcode_detector = None
+        if settings.image_ocr_enabled:
+            from app.image import (  # noqa: PLC0415
+                TesseractOcrBackend,
+                apply_solid_black_mask,
+            )
+
+            ocr = TesseractOcrBackend()
+            masker = apply_solid_black_mask
+        if settings.image_face_detection_enabled:
+            from app.image import HaarFaceDetector  # noqa: PLC0415
+
+            face_detector = HaarFaceDetector()
+        if settings.image_barcode_detection_enabled:
+            from app.image import PyzbarBarcodeDetector  # noqa: PLC0415
+
+            barcode_detector = PyzbarBarcodeDetector()
+        redactor = ImageRedactor(
+            a,
+            ocr=ocr,
+            masker=masker,
+            face_detector=face_detector,
+            barcode_detector=barcode_detector,
+        )
+        _image_redactor["value"] = redactor
+        return redactor
+
     @app.post("/redact-image", response_model=RedactImageResponse)
     def redact_image(
         body: dict[str, object],
         a: AnalyzerService = Depends(get_analyzer),
     ) -> RedactImageResponse:
-        """Phase 17 image-redaction endpoint (slim v1.0).
+        """Phase 17 image-redaction endpoint (v1.1).
 
-        Accepts ``{"image_base64": <b64>}``, runs the stub OCR backend
-        through the standard text pipeline, returns the masked image
-        (currently identity-masker until v1.1 wires OpenCV) plus the
-        token map and bbox audit. The API contract is stable — the
-        Converter integrates against this shape today; v1.1 swaps the
-        backend internals.
+        Accepts ``{"image_base64": <b64>}``. v1.1 wires real backends
+        when the engine is configured (``VS_ENGINE_IMAGE_OCR_ENABLED=true``
+        etc.); otherwise falls back to the v1.0 stub-OCR + identity-mask
+        path so unit tests stay deterministic.
+
+        Hard rule (Phase 17 §3.2): every backend used here fails closed
+        — OCR / face / barcode / mask errors raise an EngineUnavailable
+        which the ASGI error handler converts to 503.
         """
         b64 = body.get("image_base64", "")
         if not isinstance(b64, str) or not b64:
             raise ValueError("image_base64 is required")
         image_bytes = base64.b64decode(b64)
-        redactor = ImageRedactor(a)
+        redactor = _get_image_redactor(a)
         result = redactor.redact(image_bytes)
         return RedactImageResponse(
             image_sha256=result.image_sha256,

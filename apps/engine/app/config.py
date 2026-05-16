@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
 
+    # v1.1: image-redaction backends. Default off so unit tests using
+    # ``Settings()`` keep getting the no-op stubs (no tesseract/libzbar
+    # required for the CI Python job). Production Docker image sets all
+    # three to true via ENV.
+    image_ocr_enabled: bool = False
+    image_face_detection_enabled: bool = False
+    image_barcode_detection_enabled: bool = False
+
 
 def load_settings() -> Settings:
     return Settings()

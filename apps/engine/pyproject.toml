@@ -27,6 +27,15 @@ dependencies = [
     # Observability
     "python-json-logger==3.2.1",
     "prometheus-client==0.21.1",
+    # v1.1: image-redaction backends (Phase 17 v1.1).
+    # Tesseract OCR via pytesseract — needs the `tesseract-ocr` system
+    # package in the runtime image (Dockerfile installs it). pyzbar
+    # needs `libzbar0`. opencv-python-headless avoids the X11/GUI deps
+    # of the regular `opencv-python` wheel.
+    "pillow==11.0.0",
+    "pytesseract==0.3.13",
+    "opencv-python-headless==4.10.0.84",
+    "pyzbar==0.1.9",
 ]
 
 [dependency-groups]
@@ -43,6 +52,7 @@ dev = [
     # run the unit tests without a separate `python -m spacy download` step
     # (uv venvs ship without pip, so spaCy's CLI downloader can't run).
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl",
+    "qrcode>=8.2",
 ]
 
 [build-system]
@@ -67,7 +77,7 @@ disallow_untyped_defs = true
 exclude = ["tests/fixtures"]
 # presidio + spacy ship without complete type stubs; treat as untyped imports.
 [[tool.mypy.overrides]]
-module = ["presidio_analyzer.*", "presidio_anonymizer.*", "spacy.*"]
+module = ["presidio_analyzer.*", "presidio_anonymizer.*", "spacy.*", "pytesseract.*", "pyzbar.*", "cv2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

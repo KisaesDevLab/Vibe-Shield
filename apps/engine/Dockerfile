@@ -47,6 +47,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     VS_ENGINE_HOST=0.0.0.0 \
     VS_ENGINE_PORT=8000
 
+# v1.1: image-redaction backends. Tesseract for OCR, libzbar for
+# barcode/QR decoding, libgl1 / libglib2 for opencv-python-headless'
+# native deps. Languages: install eng + osd (orientation/script).
+# Total image size delta: ~70 MB; well within the 2.5 GB BUILD_PLAN cap.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-osd \
+        libzbar0 \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Enable v1.1 image backends by default in the production image.
+ENV VS_ENGINE_IMAGE_OCR_ENABLED=true \
+    VS_ENGINE_IMAGE_FACE_DETECTION_ENABLED=true \
+    VS_ENGINE_IMAGE_BARCODE_DETECTION_ENABLED=true
+
 # Drop root privileges. The engine never writes to disk in normal operation.
 RUN groupadd --system vibe \
     && useradd --system --gid vibe --home /app --shell /usr/sbin/nologin vibe
