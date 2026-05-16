@@ -40,6 +40,16 @@ const configSchema = z.object({
     .int()
     .nonnegative()
     .default(500_000_000),
+  /** Periodic Anthropic key re-probe interval (ms). v1.1 §3.7. Set to
+   *  0 to disable; default 15 minutes. The re-probe never crashes the
+   *  gateway — failures are surfaced via structured warn logs and the
+   *  next /v1/messages request fails closed via the existing 401/503
+   *  paths. */
+  ANTHROPIC_REPROBE_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(900_000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 });
 

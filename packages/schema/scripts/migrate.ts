@@ -23,10 +23,10 @@ async function main(): Promise<void> {
   }
   const handle = createDatabase(url, { max: 2 });
   try {
-    // eslint-disable-next-line no-console
+     
     console.error(`Running migrations against ${url.replace(/:[^:@]*@/, ':***@')}`);
     await runMigrations(handle);
-    // eslint-disable-next-line no-console
+     
     console.error('migrations applied.');
   } finally {
     await handle.close();
@@ -34,7 +34,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  // eslint-disable-next-line no-console
+   
   console.error(`migrate failed: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });
