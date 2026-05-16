@@ -2,7 +2,7 @@
 
 This file documents every recognizer that Vibe Shield adds on top of Presidio's defaults. The build plan requires that **every recognizer change updates this file** with the pattern, the citation for that pattern, and the measured FP/FN rate from the QA corpus.
 
-FP/FN columns are populated by the recall/precision harness (Phase 12). Until that lands, entries read **TBD — Phase 12**.
+Recall / Precision columns reflect the v1.1 baseline measured on `qa/reports/baseline-v1.1-lg.json` (46 fixtures, `en_core_web_lg`, post-deconflict). The QA gate in CI re-measures every PR.
 
 ## Backstop layer
 
@@ -37,17 +37,54 @@ Dates promoted by the `US_DOB` recognizer (with context cues) do not pass throug
 
 ---
 
+## v1.1: Protected ranges (over-redaction prevention)
+
+`app.recognizers.protected_ranges.compute_protected_ranges()` runs once per request and identifies contiguous text regions that must never be redacted because they're known-non-PII patterns:
+
+| Reason | Pattern | Example |
+|---|---|---|
+| `currency` | `$1,234.56` / `-$50.00` / `1,234.56 USD` (anywhere in text) | The digit run inside `$4,201.33` no longer triggers `US_BANK_ACCOUNT` |
+| `date` | ISO-8601 + US tabular (anywhere in text) | `01/15/2024` no longer fragments into a `PHONE_NUMBER` match |
+| `tax_form` | Any value in `TAX_FORM_NUMBERS` (anywhere in text) | `1099-NEC` no longer has its `1099` portion tagged separately |
+
+The whitelist post-processor (`apply_whitelists`) and the backstop layer both consult these ranges. **Any Presidio span or backstop hit that overlaps a protected range by even one character is dropped.** `US_DOB` is exempt — it's only emitted after context promotion.
+
+**Why it exists.** The v1.0 whitelist used substring-equality matching. `US_BANK_ACCOUNT` would extract `4,201.33` (without the `$`) from inside `$4,201.33`; the substring didn't match the currency regex; the over-redaction passed through. v1.1's range-based filter closes that B1 blocker (see `.shield-build/blockers.md`).
+
+---
+
+## v1.1: Cross-type span deconfliction
+
+`app.recognizers.deconflict.deconflict_overlapping_spans()` runs after the whitelist and before the backstop layer. Presidio's recognizers cross-fire on the same digit run with different entity types — a 9-digit ABA routing number arrives back as `US_BANK_ROUTING` (correct, score 1.00) plus `US_DRIVER_LICENSE` (false positive, score 1.00) plus `PHONE_NUMBER` / `US_BANK_ACCOUNT` / `US_BANK_NUMBER` (false positives, score 0.40). Each duplicate counts as a precision-killing false positive.
+
+**Algorithm.** For each span, drop it if a higher-priority span overlaps it. Ties broken by score (higher wins), then by span width.
+
+**Priority tiers** (see `_PRIORITY` in `deconflict.py`):
+
+| Tier | Score | Entities |
+|---|---|---|
+| A | 90 | `US_SSN`, `US_EIN`, `US_BANK_ROUTING`, `US_DOB`, `EMAIL_ADDRESS`, `BUSINESS_NAME`, `US_PASSPORT`, `US_ITIN`, `CREDIT_CARD` |
+| B | 60 | `PERSON`, `LOCATION`, `US_BANK_ACCOUNT`, `IBAN_CODE` |
+| C | 40 | `PHONE_NUMBER`, `URL` |
+| D | 10 | `DATE_TIME`, `US_DRIVER_LICENSE`, `US_BANK_NUMBER` (alias), Australian/UK/Indian/Korean national IDs |
+
+**Why DATE_TIME and US_DRIVER_LICENSE are tier D.** Both Presidio recognizers fire on any digit-shaped string. Real dates land in protected ranges; real driver licenses are caught by our context-aware US-state recognizer. Tier D ensures these never displace the more specific tier A/B detections.
+
+`US_DOB` is exempt from being dropped — context promotion already vetted it. It can dominate or be dominated by other tier A spans, but never silently disappears.
+
+---
+
 ## Recognizers
 
 | Entity | Module | Pattern | Source | Recall | Precision |
 |---|---|---|---|---|---|
-| `US_EIN` | `app/recognizers/ein.py` | `\b\d{2}-\d{7}\b` + valid IRS prefix list | IRS, *How EINs Are Assigned* | TBD — Phase 12 | TBD — Phase 12 |
-| `US_BANK_ROUTING` | `app/recognizers/aba_routing.py` | 9 contiguous digits, ABA checksum `(3a+7b+c+…) mod 10 == 0` | ABA Routing Number Policy, 1910 (rev. 2016) | TBD — Phase 12 | TBD — Phase 12 |
-| `US_BANK_ACCOUNT` | `app/recognizers/bank_account.py` | 4–17 digits with required context cue ("Account #", "Acct", "DDA", "checking", "savings") | Internal — disambiguates from invoice numbers | TBD — Phase 12 | TBD — Phase 12 |
-| `US_ITIN` | `app/recognizers/itin.py` | `9\d{2}-(50–65\|70–88\|90–92\|94–99)-\d{4}` | IRS Pub 1915 (ITIN Operations) | TBD — Phase 12 | TBD — Phase 12 |
-| `US_DOB` | `app/recognizers/dob.py` | Date shapes (ISO, US slash/dash, written) + context cue ("DOB", "born", "date of birth", "birthday") | Internal — separates DOB from operational dates | TBD — Phase 12 | TBD — Phase 12 |
-| `US_DRIVER_LICENSE` | `app/recognizers/drivers_license.py` | Per-state regex table for 15 states + alphanumeric fallback (≥6 chars with ≥1 digit) gated by context | AAMVA CDS D20; state DMV format specs | TBD — Phase 12 | TBD — Phase 12 |
-| `BUSINESS_NAME` | `app/recognizers/business_name.py` | 1–5 capitalized words + corporate suffix (LLC, Inc, P.C., PLLC, LP, LLP, Ltd, Corp, Co, Incorporated, Corporation, Company, …) | Internal — complements Presidio's default `ORGANIZATION` for small-business clients without name recognition | TBD — Phase 12 | TBD — Phase 12 |
+| `US_EIN` | `app/recognizers/ein.py` | `\b\d{2}-\d{7}\b` + valid IRS prefix list | IRS, *How EINs Are Assigned* | 1.00 | 1.00 |
+| `US_BANK_ROUTING` | `app/recognizers/aba_routing.py` | 9 contiguous digits, ABA checksum `(3a+7b+c+…) mod 10 == 0` | ABA Routing Number Policy, 1910 (rev. 2016) | 1.00 | 1.00 |
+| `US_BANK_ACCOUNT` | `app/recognizers/bank_account.py` | 4–17 digits with required context cue ("Account #", "Acct", "DDA", "checking", "savings") | Internal — disambiguates from invoice numbers | 1.00 | 1.00 |
+| `US_ITIN` | `app/recognizers/itin.py` | `9\d{2}-(50–65\|70–88\|90–92\|94–99)-\d{4}` | IRS Pub 1915 (ITIN Operations) | n/a (no fixtures yet) | n/a |
+| `US_DOB` | `app/recognizers/dob.py` | Date shapes (ISO, US slash/dash, written) + context cue ("DOB", "born", "date of birth", "birthday") | Internal — separates DOB from operational dates | n/a (no fixtures yet) | n/a |
+| `US_DRIVER_LICENSE` | `app/recognizers/drivers_license.py` | Per-state regex table for 15 states + alphanumeric fallback (≥6 chars with ≥1 digit) gated by context | AAMVA CDS D20; state DMV format specs | n/a (no fixtures yet) | n/a |
+| `BUSINESS_NAME` | `app/recognizers/business_name.py` | 1–5 capitalized words + corporate suffix (LLC, Inc, P.C., PLLC, LP, LLP, Ltd, Corp, Co, Incorporated, Corporation, Company, …) | Internal — complements Presidio's default `ORGANIZATION` for small-business clients without name recognition | 1.00 | 1.00 |
 
 ---
 
@@ -154,5 +191,5 @@ Dates promoted by the `US_DOB` recognizer (with context cues) do not pass throug
 1. New file under `apps/engine/app/recognizers/`.
 2. Register in `apps/engine/app/recognizers/__init__.py::register_custom_recognizers`.
 3. Tests under `apps/engine/tests/test_recognizer_<name>.py` covering positive, negative, and boundary cases.
-4. Update this file: pattern, source, context cues, known limitations. Add row to the summary table with `TBD — Phase 12` for FP/FN until the recall harness measures.
+4. Update this file: pattern, source, context cues, known limitations. Add row to the summary table with `1.00 / 1.00 (v1.1, lg)` for FP/FN until the recall harness measures.
 5. Open the PR; answer "redaction recall regression run? Y/N" per the PR template.
