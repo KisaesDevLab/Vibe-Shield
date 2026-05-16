@@ -4,6 +4,21 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — v1.1 §3.2: real image-redaction backends (Phase 17 v1.1)
+
+The v1.0 image pipeline shipped the API surface + per-page workflow + audit-event type behind a stub OCR. v1.1 wires the production backends without changing the API contract — Converter / GLM-OCR consumers can drop in the new image without code changes.
+
+- **`apps/engine/app/image/ocr_tesseract.py`** — `TesseractOcrBackend`. Per-word text + bboxes via `pytesseract.image_to_data`. Default page-segmentation mode 6 ("uniform block of text") matches financial-document layout. `min_word_confidence=30` filters Tesseract's documented "low-quality" floor without dropping real PII. Failures (binary missing, image unreadable) raise `OcrUnavailable` → fail-closed 503.
+- **`apps/engine/app/image/masker.py`** — `apply_solid_black_mask`. Pillow-based painter that draws solid-black rectangles over every `MaskedRegion`. Preserves source format (PNG/JPEG/WebP), preserves dimensions, preserves alpha for RGBA PNGs. Empty region list → input bytes returned unchanged.
+- **`apps/engine/app/image/face_detector.py`** — `HaarFaceDetector`. OpenCV Haar-cascade frontal face detector using the bundled `haarcascade_frontalface_default.xml`. Defaults: `scaleFactor=1.1`, `minNeighbors=5`, `minSize=30×30`. Catches photo-ID faces (driver's license, passport bio page) and selfies in identity-verification flows. MediaPipe / DNN deferred to v1.2 pending training-data licensing (open-decisions.md::D6).
+- **`apps/engine/app/image/barcode_detector.py`** — `PyzbarBarcodeDetector`. libzbar-backed barcode/QR decoder. Redacts QR, PDF417 (driver licenses), CODE128, EAN/UPC, CODABAR, I25, DATABAR. Decoded payload **never** appears in logs — only a SHA-256-truncated hash is recorded for audit attribution.
+- **`apps/engine/app/image/pipeline.py`** — `ImageRedactor` gains `face_detector` and `barcode_detector` constructor args. Pipeline order: OCR → text analyzer → text-region mapping → face detection → barcode detection → mask all regions. Each step has its own fail-closed error path. No-op `_NoFaceDetector` / `_NoBarcodeDetector` defaults preserve the v1.0 test contract.
+- **`apps/engine/app/main.py`** — `_get_image_redactor` lazily builds the singleton `ImageRedactor` on first `/redact-image` hit, gated by three new config flags.
+- **`apps/engine/app/config.py`** — three new env-driven flags: `VS_ENGINE_IMAGE_OCR_ENABLED`, `VS_ENGINE_IMAGE_FACE_DETECTION_ENABLED`, `VS_ENGINE_IMAGE_BARCODE_DETECTION_ENABLED`. All default to `false` so unit tests keep getting deterministic stubs; the production Dockerfile flips them all to `true`.
+- **`apps/engine/Dockerfile`** — installs `tesseract-ocr` + `tesseract-ocr-eng` + `tesseract-ocr-osd`, `libzbar0`, `libgl1`, `libglib2.0-0`. Default image gains all three image flags. Final image **1.13 GB** — under the BUILD_PLAN §2 cap of 2.5 GB; +570 MB delta over v1.0.1's 565 MB stub-only build.
+- **`apps/engine/pyproject.toml`** — adds `pillow==11.0.0`, `pytesseract==0.3.13`, `opencv-python-headless==4.10.0.84`, `pyzbar==0.1.9` to runtime deps; `qrcode>=8.2` to dev deps for test fixture generation. Mypy `ignore_missing_imports` extended for `pytesseract`, `pyzbar`, `cv2`.
+- **15 new pytest cases** (`tests/test_image_backends_v1_1.py`). Synthetic test images generated at runtime (no binary fixtures in git): PIL-rendered text for OCR, qrcode-generated PNGs for barcode, blank canvases for face-detector negatives. Tests cleanly skip when the local env lacks tesseract/libzbar (CI runs them inside the engine Docker image where everything is present). Engine suite total: **314 passed, 4 skipped**.
+
 ### Added — v1.1 Tier B operational gaps (§3.4, §3.7, §3.9, §3.12)
 
 Four small-surface operational items the v1.0 release shipped without. Each is independently mergeable.

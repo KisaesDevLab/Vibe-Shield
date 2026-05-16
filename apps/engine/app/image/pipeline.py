@@ -1,15 +1,16 @@
 """Image redaction pipeline.
 
 The OCR + masking surface is abstracted behind ``OcrBackend`` so the
-production deployment can plug in GLM-OCR or Tesseract without
-touching the calling code. v1.0 ships ``StubOcrBackend`` (returns the
-input image unchanged + an empty OCR text), which lets the gateway and
-Converter wire end-to-end against the real API contract today.
+production deployment can plug in GLM-OCR (Phase 18 cross-repo) or
+Tesseract (v1.1 default) without touching the calling code. v1.0
+shipped ``StubOcrBackend``; v1.1 wires Tesseract + Pillow masking +
+OpenCV face detection + pyzbar barcode detection.
 
 Hard rules in force:
   - Image bytes never appear in logs (we hash them for audit reference).
-  - If OCR or any masking step fails, the request fails closed —
-    we do not return a "best effort" redacted image.
+  - If OCR, face detection, barcode detection, or masking fails, the
+    request fails closed — we do not return a "best effort" redacted
+    image.
 """
 
 from __future__ import annotations
@@ -82,21 +83,54 @@ class ImageRedactionResult:
     masked_regions: tuple[MaskedRegion, ...]
 
 
+class FaceDetector(Protocol):
+    """Detects faces in an image; returns regions to mask."""
+
+    def detect(self, image_bytes: bytes) -> list[MaskedRegion]: ...
+
+
+class BarcodeDetector(Protocol):
+    """Detects barcodes/QR codes; returns regions to mask."""
+
+    def detect(self, image_bytes: bytes) -> list[MaskedRegion]: ...
+
+
+class _NoFaceDetector:
+    """v1.0-compatible no-op face detector. Tests that don't care about
+    faces inject this; production injects the real Haar detector."""
+
+    def detect(self, _image_bytes: bytes) -> list[MaskedRegion]:
+        return []
+
+
+class _NoBarcodeDetector:
+    """No-op barcode detector. Same rationale as _NoFaceDetector."""
+
+    def detect(self, _image_bytes: bytes) -> list[MaskedRegion]:
+        return []
+
+
 class ImageRedactor:
-    """End-to-end image-redaction pipeline."""
+    """End-to-end image-redaction pipeline.
+
+    v1.1: face + barcode detectors run alongside OCR. All three must
+    succeed (fail-closed). The masker paints every region — text-derived
+    plus face plus barcode — over the original image.
+    """
 
     def __init__(
         self,
         analyzer: AnalyzerService,
         ocr: OcrBackend | None = None,
         masker: Callable[[bytes, list[MaskedRegion]], bytes] | None = None,
+        face_detector: FaceDetector | None = None,
+        barcode_detector: BarcodeDetector | None = None,
     ) -> None:
         self.analyzer = analyzer
         self.ocr = ocr or StubOcrBackend()
-        # Default masker is identity until v1.1 ships the OpenCV-based
-        # solid-black mask; the audit event still reports which regions
-        # *would have been* masked, so the contract is fully observable.
         self.masker = masker or _identity_masker
+        self.face_detector = face_detector or _NoFaceDetector()
+        self.barcode_detector = barcode_detector or _NoBarcodeDetector()
 
     def redact(self, image_bytes: bytes) -> ImageRedactionResult:
         ocr = self.ocr.extract(image_bytes)
@@ -104,8 +138,11 @@ class ImageRedactor:
         tokenizer = RequestTokenizer()
         redacted_text, allocations = tokenizer.redact(ocr.text, spans)
 
-        masked_regions = list(_spans_to_regions(spans, ocr.spans, allocations))
-        masked_bytes = self.masker(image_bytes, masked_regions)
+        text_regions = list(_spans_to_regions(spans, ocr.spans, allocations))
+        face_regions = self.face_detector.detect(image_bytes)
+        barcode_regions = self.barcode_detector.detect(image_bytes)
+        all_regions: list[MaskedRegion] = [*text_regions, *face_regions, *barcode_regions]
+        masked_bytes = self.masker(image_bytes, all_regions)
 
         return ImageRedactionResult(
             image_sha256=hashlib.sha256(image_bytes).hexdigest(),
@@ -113,14 +150,15 @@ class ImageRedactor:
             masked_image_bytes=masked_bytes,
             redacted_text=redacted_text,
             tokens=tuple((a.token, a.entity_type, a.cleartext) for a in allocations),
-            masked_regions=tuple(masked_regions),
+            masked_regions=tuple(all_regions),
         )
 
 
 def _identity_masker(image_bytes: bytes, _regions: list[MaskedRegion]) -> bytes:
-    """v1.0 masker: returns the image unchanged. Real solid-black
-    masking requires Pillow / OpenCV in the runtime image; v1.1 wires
-    that in without touching the API contract."""
+    """No-op masker. Used when the caller doesn't want masking applied
+    (e.g., the audit-only path) or when the runtime image lacks Pillow.
+    Production code wires ``apply_solid_black_mask`` from
+    ``app.image.masker`` instead."""
     return image_bytes
 
 
