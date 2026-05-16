@@ -104,12 +104,50 @@ function sha256(s: string): Buffer {
   return createHash('sha256').update(s, 'utf8').digest();
 }
 
-function safeStringify(value: unknown): string {
-  // JSON.stringify is non-deterministic on object key ordering across
-  // engines. We don't need cross-engine determinism (audit hashes are
-  // produced by the gateway only), but stable ordering helps when
-  // operators verify hashes by hand.
-  return JSON.stringify(value, Object.keys(value as Record<string, unknown> ?? {}).sort());
+/**
+ * Canonical-JSON stringify for audit-payload hashing.
+ *
+ * v1.1 §3.9: replace the v1.0 shallow-key-sort with a recursive walk
+ * so nested objects are also key-sorted. Audit hashes are tamper-
+ * evidence material — operators verifying by hand need deterministic
+ * output that doesn't depend on engine V8 internals or property
+ * insertion order.
+ *
+ * Properties:
+ *   - Object keys sorted lexicographically at every depth.
+ *   - Arrays preserve order (semantically meaningful).
+ *   - undefined values dropped from objects (matches JSON.stringify).
+ *   - undefined values in arrays serialize as null (matches JSON.stringify).
+ *   - bigint -> string with "n" suffix (JSON.stringify throws otherwise).
+ *   - Cycles throw — should never appear in audit payloads, hard fail.
+ */
+export function safeStringify(value: unknown): string {
+  return JSON.stringify(canonicalize(value, new WeakSet()));
+}
+
+function canonicalize(value: unknown, seen: WeakSet<object>): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'bigint') return `${value.toString()}n`;
+  if (typeof value !== 'object') return value;
+  if (seen.has(value as object)) {
+    throw new Error('safeStringify: cyclic reference detected');
+  }
+  seen.add(value as object);
+  if (Array.isArray(value)) {
+    const out = value.map((v) => (v === undefined ? null : canonicalize(v, seen)));
+    seen.delete(value as object);
+    return out;
+  }
+  const obj = value as Record<string, unknown>;
+  const sortedKeys = Object.keys(obj).sort();
+  const out: Record<string, unknown> = {};
+  for (const k of sortedKeys) {
+    const v = obj[k];
+    if (v === undefined) continue;
+    out[k] = canonicalize(v, seen);
+  }
+  seen.delete(value as object);
+  return out;
 }
 
 function startOfDayUtc(date: Date): Date {

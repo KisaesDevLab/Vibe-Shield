@@ -4,6 +4,20 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — v1.1 Tier B operational gaps (§3.4, §3.7, §3.9, §3.12)
+
+Four small-surface operational items the v1.0 release shipped without. Each is independently mergeable.
+
+- **§3.4 — daily audit-digest cron writer**. New `packages/schema/scripts/write-audit-digest.ts` + `make audit-digest` target. Computes the SHA-256 hash-chained digest of every `vs_audit` row for a UTC date and writes it to `compliance/audit-digests/<YYYY-MM-DD>.txt` with mode `0440` and the `wx` flag (refuses to overwrite — defeats tamper evidence). Defaults to *yesterday*; `--date YYYY-MM-DD` for back-fill; `--force` documented as an operator escape hatch with no policy backing. Cron line: `0 5 0 * * *   node packages/schema/dist/scripts/write-audit-digest.js`.
+- **§3.7 — periodic Anthropic key re-probe**. New `apps/gateway/src/anthropic/reprobe.ts`: `AnthropicKeyReprobe` runs every `ANTHROPIC_REPROBE_INTERVAL_MS` (default 15 min, set to 0 to disable). Failures emit a structured `warn` log with `reason: consumer_key | unreachable | unknown` so admins see revocation before the next paying request fails. Never crashes the server — the existing 401/503 paths handle the actual request failure. Wired in `index.ts` boot/shutdown. 7 new pytest cases (fake-timer driven).
+- **§3.9 — canonical `safeStringify`**. Replaced the v1.0 shallow-key-sort in `audit-logger.ts` with a recursive walk so nested objects are also key-sorted at every depth. Audit-digest tamper evidence depends on this. Drops `undefined` from objects, preserves `null`, serializes `bigint` with `n` suffix (`JSON.stringify` would throw), throws on cycles. 10 new test cases pin the determinism contract.
+- **§3.12 — hard-rule-2 lint extends to Python**. `scripts/check-no-anthropic-direct.sh` now greps `*.py` files for `from anthropic` / `import anthropic` outside the (currently empty) Python allowlist. Same fail-closed semantics as the TS check. Confirms the engine + qa harness never talk to Anthropic directly.
+
+Misc:
+- `Makefile` gains `audit-digest` target.
+- `packages/schema/package.json` gains `audit-digest` script.
+- Gateway `config.ts` gains `ANTHROPIC_REPROBE_INTERVAL_MS` (default 900_000 ms).
+
 ### Added — v1.1 §3.1: B1 precision fix (cross-type span deconfliction + protected ranges)
 
 Closes the v1.0 B1 blocker. Two new layers in the engine analyzer pipeline; CHANGELOG-summary measurements on `qa/reports/baseline-v1.1-lg.json` (46 fixtures, `en_core_web_lg`):

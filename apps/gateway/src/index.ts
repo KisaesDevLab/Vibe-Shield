@@ -27,6 +27,7 @@ import { createAnthropicClient } from './anthropic/client.js';
 import { probeAnthropicKey } from './anthropic/probe.js';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
+import { AnthropicKeyReprobe } from './anthropic/reprobe.js';
 import { EngineClient } from './engine/client.js';
 import { createLogger } from './logging.js';
 import { PolicyResolver } from './policy/resolver.js';
@@ -99,15 +100,28 @@ async function main(): Promise<void> {
     engineUrl: config.ENGINE_URL,
   });
 
+  const reprobe = new AnthropicKeyReprobe({
+    apiKey: config.ANTHROPIC_API_KEY,
+    intervalMs: config.ANTHROPIC_REPROBE_INTERVAL_MS,
+    logger,
+  });
+  reprobe.start();
+
   const server = app.listen(config.PORT, config.HOST, () => {
     logger.info(
-      { host: config.HOST, port: config.PORT, engine_url: config.ENGINE_URL },
+      {
+        host: config.HOST,
+        port: config.PORT,
+        engine_url: config.ENGINE_URL,
+        anthropic_reprobe_interval_ms: config.ANTHROPIC_REPROBE_INTERVAL_MS,
+      },
       'gateway listening',
     );
   });
 
   const shutdown = (signal: string): void => {
     logger.info({ signal }, 'shutting down');
+    reprobe.stop();
     server.close(() => {
       tenantKeys.clear();
       void redis.quit().catch(() => undefined);

@@ -29,7 +29,8 @@
     "drizzle:generate": "drizzle-kit generate",
     "drizzle:migrate": "drizzle-kit migrate",
     "rotate-kek": "tsx scripts/rotate-kek.ts",
-    "migrate": "tsx scripts/migrate.ts"
+    "migrate": "tsx scripts/migrate.ts",
+    "audit-digest": "tsx scripts/write-audit-digest.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.38.2",
