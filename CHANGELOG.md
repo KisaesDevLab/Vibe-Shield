@@ -4,6 +4,36 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-05-15
+
+Closes 9 of the 12 v1.1 backlog items from the post-v1.0 punch list (§3 in the original `What's left to build` survey). The remaining three (§3.5 spend-cap webhook alert, §3.6 streaming SSE recorded-fixture coverage, §3.8 PolicyResolver cache invalidation) are operational refinements that don't change the user-facing surface; they roll forward to v1.2.
+
+### Headline result
+
+The v1.0 B1 precision blocker is closed. Measured on `qa/reports/baseline-v1.1-lg.json` (46 fixtures, `en_core_web_lg`):
+
+| Entity | v1.0 | v1.1 |
+|---|---|---|
+| `US_BANK_ACCOUNT` precision | 0.45 | **1.00** |
+| `PHONE_NUMBER` precision | 0.77 | **1.00** |
+| `PERSON` precision | 0.92 | **1.00** |
+
+Recall preserved at 1.00 across all measured tier-A entities. The QA harness's `PRECISION_GATE_EXEMPT` is now the empty set — the 0.90 floor is unconditional.
+
+### What shipped
+
+- **§3.1** B1 precision fix: pre-recognizer protected ranges + cross-type span deconfliction (PR #14)
+- **§3.2** real image-redaction backends: Tesseract OCR + Pillow masking + OpenCV Haar face detection + pyzbar barcode/QR (PR #15)
+- **§3.3** minimal admin UI + `/v1/admin/*` REST API (PR #18)
+- **§3.4** daily audit-digest cron writer (PR #16)
+- **§3.7** periodic Anthropic key re-probe (PR #16)
+- **§3.9** canonical (deterministic) `safeStringify` (PR #16)
+- **§3.10** k6 load test scripts encoding BUILD_PLAN §19 SLOs (PR #17)
+- **§3.11** multi-arch (`linux/amd64,linux/arm64`) image release (PR #17)
+- **§3.12** hard-rule-2 lint extends to Python (PR #16)
+
+Detailed change notes for each section follow.
+
 ### Added — v1.1 §3.3: minimal admin UI + admin REST API (Phase 13)
 
 Closes the v1.1 admin-UI scope per `.shield-build/open-decisions.md::D5`. New `apps/admin/` workspace + `/v1/admin/*` REST surface in the gateway.
