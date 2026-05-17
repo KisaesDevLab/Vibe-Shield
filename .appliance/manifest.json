@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "slug": "vibe-shield",
+  "displayName": "Vibe Shield",
+  "description": "Mandatory egress gateway: redacts PII before every Anthropic call; re-identifies on response.",
+  "logo": "vibe-shield.svg",
+  "userFacing": true,
+
+  "image": {
+    "server": "ghcr.io/kisaesdevlab/vibe-shield-gateway",
+    "client": "ghcr.io/kisaesdevlab/vibe-shield-admin",
+    "defaultTag": "v1.1.4"
+  },
+
+  "subdomain": "shield",
+  "emergencyPort": 5193,
+  "ports": { "server": 8080, "client": 80 },
+
+  "routing": {
+    "default_upstream": "vibe-shield-admin:80",
+    "matchers": [
+      { "name": "v1",       "path": "/v1/*",          "upstream": "vibe-shield-gateway:8080", "streaming": true },
+      { "name": "health",   "path": "/health",        "upstream": "vibe-shield-gateway:8080" },
+      { "name": "ready",    "path": "/ready",         "upstream": "vibe-shield-gateway:8080" },
+      { "name": "metrics",  "path": "/metrics",       "upstream": "vibe-shield-gateway:8080" },
+      { "name": "openapi",  "path": "/openapi.json",  "upstream": "vibe-shield-gateway:8080" }
+    ]
+  },
+
+  "depends": ["postgres", "redis"],
+
+  "database": { "name": "vibe_shield_db", "user": "vibeshield" },
+
+  "redis": { "db": 7 },
+
+  "env": {
+    "required": [
+      { "name": "DATABASE_URL", "from": "database-url" },
+      { "name": "REDIS_URL",    "from": "redis-url"    },
+      {
+        "name": "VS_KEK",
+        "from": "appliance:VIBE_SHIELD_KEK",
+        "secret": true,
+        "doc": "AES-256-GCM master key, 32 random bytes base64-encoded. Generate ONCE per appliance and add to /opt/vibe/env/appliance.env: node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\". Loss = unrecoverable per-tenant DEKs. ROTATION: shield's `make rotate-kek-{dry,apply}` (in-place re-wrap, no downtime). On uninstall, `make wipe-vault-apply` drops every vs_* table first, then delete VS_KEK from the secret manager.",
+        "ui": {
+          "tier": 2,
+          "category": "Compliance",
+          "label": "Vibe Shield KEK",
+          "helpText": "Master key wrapping per-tenant DEKs. Rotate annually or after an incident; never appears in logs.",
+          "input": "password"
+        }
+      },
+      {
+        "name": "ANTHROPIC_API_KEY",
+        "from": "appliance:ANTHROPIC_API_KEY",
+        "secret": true,
+        "doc": "Commercial Anthropic API key (NOT a Claude.ai consumer key — gateway probes at boot and refuses to start on a consumer key). Inherited from the appliance-wide setting so every Vibe app shares the same key by default."
+      },
+      {
+        "name": "ENGINE_URL",
+        "from": "static:http://vibe-shield-engine:8000",
+        "doc": "Internal-only Docker DNS name for the engine. Engine is never exposed via Caddy or the emergency-access proxy."
+      },
+      {
+        "name": "GATEWAY_ADMIN_KEY",
+        "from": "generated:hex32",
+        "secret": true,
+        "doc": "X-Admin-Key for /v1/admin/* routes. Without this set, the admin API refuses every request. Generated once at enable; rotate by editing /opt/vibe/env/vibe-shield.env.",
+        "ui": {
+          "tier": 2,
+          "category": "Compliance",
+          "label": "Shield admin API key",
+          "helpText": "X-Admin-Key the admin UI presents on every call.",
+          "input": "password"
+        }
+      }
+    ],
+    "optional": [
+      {
+        "name": "ZDR_ENABLED",
+        "from": "static:false",
+        "doc": "Anthropic Zero Data Retention. Requires the ZDR addendum signed on the Anthropic account; the header alone does NOT activate ZDR.",
+        "ui": {
+          "tier": 1,
+          "category": "Compliance",
+          "label": "Anthropic Zero Data Retention",
+          "helpText": "Enable only after signing the ZDR addendum with Anthropic.",
+          "input": "toggle"
+        }
+      },
+      {
+        "name": "RATE_LIMIT_PER_MINUTE",
+        "from": "static:60",
+        "doc": "Default per-(tenant, app) request cap per minute. Per-tenant policy overrides this."
+      },
+      {
+        "name": "SPEND_CAP_MICRODOLLARS",
+        "from": "static:500000000",
+        "doc": "Default per-tenant monthly spend cap in micro-dollars (USD * 1e6). 500_000_000 = $500/month. Per-tenant policy overrides this."
+      },
+      {
+        "name": "ANTHROPIC_REPROBE_INTERVAL_MS",
+        "from": "static:900000",
+        "doc": "Periodic Anthropic key re-probe interval (ms). 0 disables. Failures log warn; the next /v1/messages call fails-closed via existing 401/503 paths."
+      },
+      {
+        "name": "MAX_REQUEST_BYTES",
+        "from": "static:1048576",
+        "doc": "Max request body size in bytes (default 1 MB)."
+      },
+      {
+        "name": "SESSION_TTL_MINUTES",
+        "from": "static:60",
+        "doc": "Session idle TTL. Shorter = tighter privacy; longer = better re-id continuity across requests."
+      },
+      {
+        "name": "LOG_LEVEL",
+        "from": "static:info",
+        "doc": "Pino log level (fatal | error | warn | info | debug | trace | silent)."
+      }
+    ]
+  },
+
+  "migrations": {
+    "command": ["node", "packages/schema/dist/scripts/migrate.js"]
+  },
+
+  "health": "/health"
+}

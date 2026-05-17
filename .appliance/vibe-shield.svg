@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Vibe Shield">
+  <title>Vibe Shield</title>
+  <!-- Shield outline -->
+  <path d="M32 4 L56 14 L56 28 Q56 48 32 60 Q8 48 8 28 L8 14 Z"
+        fill="#1a1d23" stroke="#1a1d23" stroke-width="1.5" stroke-linejoin="round"/>
+  <!-- Inner shield -->
+  <path d="M32 12 L48 19 L48 28 Q48 44 32 53 Q16 44 16 28 L16 19 Z"
+        fill="#2563eb" opacity="0.18"/>
+  <!-- Lock body -->
+  <rect x="24" y="30" width="16" height="14" rx="2" fill="#f6f7f9"/>
+  <!-- Lock shackle -->
+  <path d="M27 30 L27 24 Q27 19 32 19 Q37 19 37 24 L37 30"
+        fill="none" stroke="#f6f7f9" stroke-width="3" stroke-linecap="round"/>
+  <!-- Keyhole -->
+  <circle cx="32" cy="36" r="2" fill="#1a1d23"/>
+  <rect x="31" y="36" width="2" height="5" fill="#1a1d23"/>
+</svg>
