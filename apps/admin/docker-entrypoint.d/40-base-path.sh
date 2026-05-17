@@ -51,7 +51,13 @@ else
   # grep, which lacks --include) and debian (GNU grep). The image is
   # nginx:alpine today but we don't want a base-image change to silently
   # break this check.
-  matches=$(find "$HTML_ROOT" -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' \) \
+  # *.map included so Vite-emitted source maps get the sentinel
+  # substituted too — browser dev tools follow the sourceMappingURL
+  # comment in the .js file and load the .map; if the map still
+  # contains the literal sentinel, breakpoints and source-mapped
+  # stack traces show the wrong paths. Build ships .map files
+  # because vite.config.ts sets sourcemap: true.
+  matches=$(find "$HTML_ROOT" -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' -o -name '*.map' \) \
               -exec grep -l "$SENTINEL" {} + 2>/dev/null | wc -l)
   if [ "$matches" -eq 0 ]; then
     echo "[40-base-path] FATAL: sentinel '$SENTINEL' not found in bundle." >&2
@@ -65,7 +71,7 @@ else
   # path prefix), so VITE_BASE_PATH cannot collide with it. '|' was the
   # original choice but technically '|' is legal in URL paths if not
   # percent-encoded; using '#' removes that edge-case.
-  find "$HTML_ROOT" -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' \) \
+  find "$HTML_ROOT" -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' -o -name '*.map' \) \
     -exec sed -i "s#$SENTINEL#$VITE_BASE_PATH#g" {} +
   touch "$MARKER"
 fi
