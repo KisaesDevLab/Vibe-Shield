@@ -2,7 +2,15 @@
 #
 # Vibe Shield admin UI. React 18 + Vite static build, served by nginx.
 # Multi-stage to keep the runtime image tiny (~50 MB).
-# v1.1.4 — appliance integration.
+# v1.1.5 — appliance integration with VITE_BASE_PATH support.
+#
+# The SPA bundle is built with `base: '/__VIBE_BASE_PATH__/'` (see
+# vite.config.ts). At container start, /docker-entrypoint.d/40-base-path.sh
+# sed-substitutes that sentinel with the runtime $VITE_BASE_PATH value
+# across every .html/.js/.css file. So the SAME image runs at:
+#   - Vibe-Appliance path mount        → VITE_BASE_PATH=/shield/
+#   - Dedicated subdomain              → VITE_BASE_PATH=/ (default)
+#   - Operator-chosen custom prefix    → whatever they set
 
 ARG NODE_VERSION=24-bookworm-slim
 ARG NGINX_VERSION=1.27-alpine
@@ -58,6 +66,13 @@ server {
 EOF
 
 COPY --from=builder /build/apps/admin/dist /usr/share/nginx/html
+
+# Runtime base-path substitution hook. Runs from the nginx image's
+# built-in /docker-entrypoint.sh BEFORE nginx starts, so the bundle is
+# rewritten in-place once per container start with the actual mount
+# point. Idempotent on subsequent runs (sentinel already replaced).
+COPY apps/admin/docker-entrypoint.d/40-base-path.sh /docker-entrypoint.d/40-base-path.sh
+RUN chmod +x /docker-entrypoint.d/40-base-path.sh
 
 EXPOSE 80
 

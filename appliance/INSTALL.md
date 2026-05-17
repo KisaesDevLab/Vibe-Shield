@@ -1,21 +1,29 @@
-# Vibe Shield — appliance install one-pager
+# Vibe Shield — standalone install one-pager
 
-Target audience: the appliance operator wiring Vibe Shield into an existing Vibe Appliance docker-compose deployment. Assumes you already have Postgres + Redis + Caddy + Tailscale running.
+> **Running on Vibe-Appliance?** Stop reading this. The appliance reads
+> [`../.appliance/manifest.json`](../.appliance/manifest.json) and handles
+> installation, env rendering, Caddy config, DB bootstrap, and updates
+> for you. Use the admin console's app toggle. The steps below are for
+> bolting Vibe Shield onto a docker-compose stack you maintain yourself.
+
+Target audience: an operator wiring Vibe Shield into an existing
+docker-compose deployment they own end-to-end. Assumes you already have
+Postgres + Redis + a reverse proxy (Caddy, Traefik, nginx) + optional
+Tailscale running.
 
 Estimated time: 10 minutes for a fresh install, 5 for an upgrade.
 
 ## What you're installing
 
-3 containers + 1 one-shot:
+3 containers:
 
 | Container | Port (internal) | External via Caddy | Purpose |
 |---|---|---|---|
 | `vibe-shield-engine` | 8000 | **no** (internal only) | Python redaction engine — Presidio + spaCy lg + custom recognizers |
-| `vibe-shield-gateway` | 8080 | `gateway.shield.<domain>` (Tailscale-only by default) | Anthropic-Messages-compatible API |
+| `vibe-shield-gateway` | 8080 | `gateway.shield.<domain>` (Tailscale-only by default) | Anthropic-Messages-compatible API. Self-migrates on boot when `MIGRATIONS_AUTO=true` (the default in this fragment) — no separate migrate one-shot needed. |
 | `vibe-shield-admin` | 80 | `shield.<domain>` (Tailscale-only by default) | React SPA for key issuance, audit browsing, policy viewing |
-| `vibe-shield-migrate` | — | — | One-shot: applies DB migrations on bootstrap + every upgrade |
 
-Shared infra: the appliance's existing Postgres + Redis. Vibe Shield uses table prefix `vs_*` and Redis DB index `/3` by default.
+Shared infra: the appliance's existing Postgres + Redis. Vibe Shield uses table prefix `vs_*` (database `vibe_shield_db`, role `vibeshield`) and Redis DB index `/5` (this is the canonical allocation in the appliance's manifest catalog; do not change without re-checking other apps' indices to avoid collisions).
 
 ## Prereqs
 
@@ -57,6 +65,8 @@ $EDITOR /opt/vibe/appliance/.env
 
 Required fields: `ANTHROPIC_API_KEY`, `VS_KEK`, `VIBE_SHIELD_DATABASE_URL`, `VIBE_SHIELD_REDIS_URL`, `VIBE_SHIELD_ADMIN_KEY`.
 
+Optional: `VIBE_SHIELD_ADMIN_BASE_PATH` (defaults to `/`). Set this to e.g. `/shield/` when you front the admin container with a reverse proxy that mounts the UI under a path prefix and strips that prefix before hitting nginx. The value MUST end with a slash. The admin nginx entrypoint shim (`/docker-entrypoint.d/40-base-path.sh`) reads this and sed-substitutes the SPA bundle's `/__VIBE_BASE_PATH__/` sentinel at container start.
+
 ### 4. Wire up Caddy
 
 ```bash
@@ -65,15 +75,25 @@ cat /path/to/vibe-shield/appliance/caddy.snippet >> /opt/vibe/appliance/Caddyfil
 docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 ```
 
-### 5. Apply migrations + boot
+### 5. Boot (migrations run automatically)
 
 ```bash
-# Run migrations as a one-shot first (creates the vs_* tables).
-# Idempotent — re-running is safe.
-docker compose --profile bootstrap run --rm vibe-shield-migrate
-
-# Then start the long-running services.
+# The gateway entrypoint runs `node dist/migrate.js` on startup when
+# MIGRATIONS_AUTO=true (default in the fragment). Drizzle's
+# __drizzle_migrations table keeps re-runs idempotent. No separate
+# bootstrap profile or one-shot job needed.
 docker compose up -d vibe-shield-engine vibe-shield-gateway vibe-shield-admin
+```
+
+If you prefer the v1.0/v1.1 separate-migrate pattern for blue-green
+schema rollout control, set `VIBE_SHIELD_MIGRATIONS_AUTO=false` in your
+.env and run migrations as a one-shot before bringing the gateway up:
+
+```bash
+docker run --rm --network "${VIBE_NETWORK_NAME:-vibe-network}" \
+  -e DATABASE_URL="$VIBE_SHIELD_DATABASE_URL" \
+  ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.1.5} \
+  node dist/migrate.js
 ```
 
 ### 6. Verify
@@ -121,16 +141,15 @@ environment:
 ## Upgrade
 
 ```bash
-# Bump version in .env or compose
-sed -i 's/VIBE_SHIELD_VERSION=v1.1.[0-9]/VIBE_SHIELD_VERSION=v1.1.3/' /opt/vibe/appliance/.env
+# Bump to the new version. Replace v1.1.6 with whatever tag you're moving to.
+NEW=v1.1.6
+sed -i "s/^VIBE_SHIELD_VERSION=.*/VIBE_SHIELD_VERSION=${NEW}/" /opt/vibe/appliance/.env
 
 # Pull new images
 docker compose pull vibe-shield-engine vibe-shield-gateway vibe-shield-admin
 
-# Run migrations FIRST (still idempotent)
-docker compose --profile bootstrap run --rm vibe-shield-migrate
-
-# Rolling restart
+# Rolling restart — gateway entrypoint runs migrations before serving
+# when MIGRATIONS_AUTO=true (default).
 docker compose up -d --force-recreate vibe-shield-engine vibe-shield-gateway vibe-shield-admin
 ```
 

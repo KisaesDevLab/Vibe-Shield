@@ -3,9 +3,17 @@
 # Vibe Shield gateway. Node.js 24 + Express 5 + Pino + Anthropic SDK.
 # Multi-stage to keep the runtime image lean. v1.0.1.
 #
-# Migrations are NOT run at boot; deploy a one-shot job using the same
-# image with command `node packages/schema/dist/scripts/migrate.js`
-# before starting the gateway. (BUILD_PLAN §1.4 separate-migrate pattern.)
+# Migration handling:
+#   - Default (MIGRATIONS_AUTO unset/false): server starts WITHOUT running
+#     migrations. Operators using the v1.0.1 §1.4 separate-migrate pattern
+#     run `docker run --rm <image> node dist/migrate.js` themselves before
+#     starting the gateway, for blue-green schema rollout control.
+#   - Vibe-Appliance mode (MIGRATIONS_AUTO=true): the entrypoint runs
+#     `node dist/migrate.js` to completion before exec'ing the server.
+#     Drizzle's __drizzle_migrations table keeps this idempotent across
+#     container restarts.
+# Either path uses the same compiled `dist/migrate.js` so behaviour is
+# identical between first enable and subsequent updates.
 
 ARG NODE_VERSION=24-bookworm-slim
 
@@ -50,6 +58,12 @@ RUN groupadd --system vibe \
 
 WORKDIR /app
 COPY --from=builder --chown=vibe:vibe /pruned/ ./
+# Entrypoint shim: runs `node dist/migrate.js` first when
+# MIGRATIONS_AUTO=true, then exec's the CMD. Vibe-Appliance sets the env
+# var via the per-app env file; standalone deployments leave it unset
+# and the shim short-circuits.
+COPY --chown=vibe:vibe apps/gateway/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 USER vibe
 
 EXPOSE 8080
@@ -59,4 +73,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 # Single Node process. Memory budget on NucBox M6: gateway ≤ 512 MB
 # (BUILD_PLAN §19). Scale horizontally with replicas if needed.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["node", "dist/index.js"]

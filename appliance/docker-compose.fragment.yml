@@ -1,19 +1,29 @@
-# Vibe Shield — appliance docker-compose fragment.
+# Vibe Shield — standalone docker-compose fragment.
 #
-# Paste these three services into the Vibe Appliance's
-# /opt/vibe/appliance/docker-compose.yml. They share the appliance's
-# existing Postgres + Redis (no new infra needed).
+# **Audience: NOT Vibe-Appliance operators.**
+# If you are running on Vibe-Appliance, ignore this directory entirely.
+# The appliance reads `.appliance/manifest.json` (sibling dir) and owns
+# the overlay, env rendering, Caddy config, and lifecycle.
 #
-# What this file does NOT do (intentional — these are appliance-level):
-#   - Define the postgres / redis services (you already have them).
-#   - Define the caddy reverse-proxy (see ./caddy.snippet).
-#   - Set ANTHROPIC_API_KEY or VS_KEK (see ./env.example + the installer).
+# This fragment is for operators bolting Vibe Shield onto an existing
+# docker-compose stack they maintain themselves. It assumes:
 #
-# Image tag policy: pin a release tag (v1.1.x), not ":latest". The
-# appliance update flow controls when Shield rolls forward.
+#   - An existing Postgres reachable on the network (set DATABASE_URL).
+#   - An existing Redis reachable on the network (set REDIS_URL).
+#   - An existing Caddy (or other reverse proxy) you wire up by hand —
+#     see ./caddy.snippet for the two vhosts.
+#   - You will hand-merge these services into your compose, or include
+#     this file via `docker compose -f your-compose.yml -f shield.yml`.
+#
+# Migration handling: the gateway image's entrypoint runs migrations on
+# startup when MIGRATIONS_AUTO=true (Drizzle's __drizzle_migrations
+# table keeps re-runs idempotent). This replaces the v1.0/v1.1 separate
+# `vibe-shield-migrate` one-shot — you no longer need to invoke a
+# bootstrap profile before `up -d`.
+#
+# Image tag policy: pin a release tag (v1.1.x), not ":latest".
 
 x-vibe-shield-env: &vibe-shield-env
-  # Shared by both engine + gateway. Override per-service below.
   PYTHONDONTWRITEBYTECODE: "1"
   PYTHONUNBUFFERED: "1"
   TZ: ${TZ:-UTC}
@@ -21,10 +31,10 @@ x-vibe-shield-env: &vibe-shield-env
 services:
 
   # ---- vibe-shield-engine ----------------------------------------
-  # Internal-only. No external port. Internal Docker network access
-  # is via the service name `vibe-shield-engine:8000`.
+  # Internal-only. No external port. Reachable on the internal Docker
+  # network as `vibe-shield-engine:8000`.
   vibe-shield-engine:
-    image: ghcr.io/kisaesdevlab/vibe-shield-engine:${VIBE_SHIELD_VERSION:-v1.1.3}
+    image: ghcr.io/kisaesdevlab/vibe-shield-engine:${VIBE_SHIELD_VERSION:-v1.1.5}
     container_name: vibe-shield-engine
     restart: unless-stopped
     environment:
@@ -32,8 +42,6 @@ services:
       VS_ENGINE_HOST: 0.0.0.0
       VS_ENGINE_PORT: "8000"
       VS_ENGINE_SPACY_MODEL: en_core_web_lg
-      # v1.1 image backends ship enabled in the production image; flip
-      # individually to false if the appliance disables image redaction.
       VS_ENGINE_IMAGE_OCR_ENABLED: "true"
       VS_ENGINE_IMAGE_FACE_DETECTION_ENABLED: "true"
       VS_ENGINE_IMAGE_BARCODE_DETECTION_ENABLED: "true"
@@ -46,39 +54,18 @@ services:
       retries: 3
     networks:
       - vibe-internal
-    # No ports: section — engine is reachable only on the internal
-    # Docker network. Caddy doesn't route to it.
-
-  # ---- vibe-shield-migrate (one-shot) ----------------------------
-  # Runs `node scripts/migrate.js` then exits 0. Drizzle's
-  # __drizzle_migrations table makes this idempotent. The appliance
-  # bootstrap + every update should run this before starting the
-  # gateway.
-  #
-  # Usage:
-  #   docker compose run --rm vibe-shield-migrate
-  #
-  # `profiles: [bootstrap]` keeps this out of the default `up`.
-  vibe-shield-migrate:
-    image: ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.1.3}
-    container_name: vibe-shield-migrate
-    profiles: ["bootstrap"]
-    command: ["node", "packages/schema/dist/scripts/migrate.js"]
-    environment:
-      DATABASE_URL: ${VIBE_SHIELD_DATABASE_URL}
-    depends_on:
-      vibe-postgres:
-        condition: service_healthy
-    networks:
-      - vibe-internal
 
   # ---- vibe-shield-gateway ----------------------------------------
-  # Public-ish: reachable from Vibe app containers on the internal
-  # network as `vibe-shield-gateway:8080`. Caddy fronts it on
-  # `gateway.shield.<domain>` for cross-host access (Tailscale-only by
-  # default — see caddy.snippet).
+  # Anthropic-Messages-compatible API. Vibe app containers reach this
+  # via `vibe-shield-gateway:8080` on the internal network; Caddy (your
+  # caddy, not packaged here) fronts it on gateway.shield.<domain> for
+  # cross-host access.
+  #
+  # MIGRATIONS_AUTO=true → the entrypoint runs `node dist/migrate.js`
+  # before starting the server. Set to "false" if you prefer to run
+  # migrations as a separate one-shot job for blue-green control.
   vibe-shield-gateway:
-    image: ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.1.3}
+    image: ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.1.5}
     container_name: vibe-shield-gateway
     restart: unless-stopped
     environment:
@@ -89,13 +76,11 @@ services:
       DATABASE_URL: ${VIBE_SHIELD_DATABASE_URL}
       REDIS_URL: ${VIBE_SHIELD_REDIS_URL}
       ENGINE_URL: http://vibe-shield-engine:8000
-      # Secrets — populate via env_file or the appliance secret manager.
-      # See ./env.example for the canonical list.
+      MIGRATIONS_AUTO: ${VIBE_SHIELD_MIGRATIONS_AUTO:-true}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       VS_KEK: ${VS_KEK}
       ZDR_ENABLED: ${VIBE_SHIELD_ZDR_ENABLED:-false}
       GATEWAY_ADMIN_KEY: ${VIBE_SHIELD_ADMIN_KEY}
-      # Quotas — sensible defaults; tune per-tenant via policies.
       RATE_LIMIT_PER_MINUTE: ${VIBE_SHIELD_RATE_LIMIT:-60}
       SPEND_CAP_MICRODOLLARS: ${VIBE_SHIELD_SPEND_CAP:-500000000}
       ANTHROPIC_REPROBE_INTERVAL_MS: ${VIBE_SHIELD_REPROBE_INTERVAL_MS:-900000}
@@ -109,33 +94,35 @@ services:
       start_period: 30s
       retries: 3
     depends_on:
-      vibe-postgres:
-        condition: service_healthy
-      vibe-redis:
-        condition: service_healthy
       vibe-shield-engine:
         condition: service_healthy
     networks:
       - vibe-internal
-    # Caddy routes external traffic; no direct host port binding.
 
   # ---- vibe-shield-admin -----------------------------------------
-  # Static React SPA. Caddy serves the built assets on
-  # `shield.<domain>` (Tailscale-only by default). It calls the
-  # gateway via same-origin /v1/admin/* fetches; Caddy handles the
-  # path-based routing.
+  # Static React SPA served by nginx on :80. Caddy serves it on
+  # shield.<domain>; the SPA calls /v1/admin/* same-origin which your
+  # Caddy must route to the gateway.
+  #
+  # VITE_BASE_PATH controls the asset prefix the nginx entrypoint hook
+  # (/docker-entrypoint.d/40-base-path.sh) bakes into the SPA bundle.
+  # Defaults to `/` (subdomain mount: shield.<domain>/...). Set to e.g.
+  # `/shield/` if you front this image with a reverse proxy that mounts
+  # the admin under a path prefix and strips that prefix before hitting
+  # nginx. Vibe-Appliance operators ignore this — the appliance's per-app
+  # env file supplies the right value automatically.
   vibe-shield-admin:
-    image: ghcr.io/kisaesdevlab/vibe-shield-admin:${VIBE_SHIELD_VERSION:-v1.1.3}
+    image: ghcr.io/kisaesdevlab/vibe-shield-admin:${VIBE_SHIELD_VERSION:-v1.1.5}
     container_name: vibe-shield-admin
     restart: unless-stopped
     environment:
       <<: *vibe-shield-env
+      VITE_BASE_PATH: ${VIBE_SHIELD_ADMIN_BASE_PATH:-/}
     networks:
       - vibe-internal
 
-# Reuse the appliance's existing internal network. Adjust the network
-# name to whatever the appliance manifest already defines (e.g.,
-# `vibe-network`, `vibe_default`, etc.).
+# Reuse an existing internal network. Override VIBE_NETWORK_NAME to
+# whatever your stack already defines.
 networks:
   vibe-internal:
     external: true
