@@ -173,8 +173,8 @@ The MCP agent integration (`mcp/server.ts`) is for Claude Desktop, which is the 
 - [ ] Session ID strategy:
   - **Diagnostics, tax-code, classification, PDF import, statement import**: one session per (clientId, periodId). All AI for that engagement period shares tokens.
   - **Support chat**: one session per conversation_id. Chat history within the conversation reuses tokens for stable re-id.
-- [ ] When a period is finalized + locked, call `Shield POST /v1/sessions/<id>/purge`.
-- [ ] When a chat conversation is closed (or after 60-min idle), same purge.
+- [ ] When a period is finalized + locked, call `Shield DELETE /v1/sessions/<id>` (idempotent — second DELETE still returns 204).
+- [ ] When a chat conversation is closed (or after 60-min idle), same DELETE.
 
 **Acceptance:** Send the same client name twice in one period; verify identical `<BUSINESS_NAME_n>` or `<PERSON_n>` token (Shield audit). After period close, materialize on those tokens returns "session expired".
 

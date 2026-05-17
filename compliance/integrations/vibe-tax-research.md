@@ -118,15 +118,17 @@ The chat consumer doesn't have to know the tool's input schema; Shield walks the
 
 ### 4.4 Skills-upload is the third Anthropic surface
 
-The skills upload (`skills.ts:112`) is a raw `fetch()`, not an SDK call. Shield needs a `/v1/skills` proxy route that accepts multipart, scans every file's contents for PII (using engine `/redact-text` and `/redact-image` paths), and forwards the cleaned files to Anthropic. This is new work in Shield itself (see Phase TR3 open items).
+The skills upload (`skills.ts:112`) is a raw `fetch()`, not an SDK call. Shield v1.1.x does **not** ship a `/v1/skills` proxy route — that's a v1.2+ Shield work item, not a Tax Research blocker.
 
-For v1, an acceptable shortcut: a firm policy says "skills uploaded by firm admins are pre-vetted; Shield audits the upload but does not redact." This matches how operator-uploaded firm memos are already trusted (the `entityContext` parallel from MyBooks).
+**v1 posture (required for ship):** trust-by-policy. The firm's compliance memo states "skills uploaded by firm admins are pre-vetted for PII before upload; Shield does not scan skill-file contents." The skills.ts raw `fetch()` continues to call Anthropic directly with the firm's API key — this is the only Anthropic touchpoint in the Vibe app suite that v1 of this plan leaves outside Shield's egress envelope. Tax Research must (a) log every skills-upload to its own database (`primary_source_consultations`-shaped table) with operator ID + filename + sha256 hash so the firm has an audit trail, and (b) emit a warning banner in the admin UI when a skill is uploaded ("This upload bypasses Vibe Shield. Verify no PII before continuing."). Phase TR6 acceptance: a skills upload must produce both a Tax Research audit row and the UI warning.
+
+**v1.2 follow-up:** Shield ships `POST /v1/skills` (multipart-aware) that scans file contents via the engine's `/redact-text` and `/redact-image` paths and forwards the cleaned files to Anthropic. Once that ships, Tax Research re-routes the `skills.ts:112` fetch through Shield and drops the trust-by-policy carve-out. Track as a Shield issue; do not gate Tax Research v1 ship on it.
 
 ### 4.5 Session lifecycle = one Shield session per chat conversation
 
 A chat conversation may span many messages over hours/days. Use the conversation ID as the Shield session ID so tokens stay stable: turn 17 mentioning "Hector Diaz" produces the same `<PERSON_5>` token as turn 1.
 
-When a conversation is archived or deleted, call `Shield POST /v1/sessions/<id>/purge`.
+When a conversation is archived or deleted, call `Shield DELETE /v1/sessions/<id>` (idempotent — second DELETE still returns 204).
 
 ### 4.6 Cost calc is sacred
 
@@ -142,9 +144,13 @@ However: Tax Research's current per-delta `res.flush()` (chat consumer `messages
 
 - Allows re-id on response (cleartext shown to the researcher).
 - Does NOT allow materialize (citations are public; never reconstruct cleartext outside the response path).
-- Stricter recognizers: enables the `sealed_party` recognizer (a recognizer for redacted court-document party names like "Doe v. Smith" where Smith is sealed).
+- `zdr_required: true` — the Tax Research workspace ships the ZDR addendum signed; the policy enforces that posture.
+- Restricts `allowed_models` to the current Opus + Sonnet (no Haiku for research-grade reasoning).
+- Restricts `allowed_apps: ['tax-research']` so no other app can borrow this policy.
 
 The `tax-research` policy is defined in Shield's `apps/gateway/src/policy/built-in.ts`. Confirm it exists before kickoff.
+
+**Recognizers are global, not policy-scoped.** Shield's `PolicyConfig` controls re-identification mode, model allow-list, app allow-list, ZDR posture, and quotas — but **not which recognizers run**. The same recognizer set executes on every redaction call regardless of policy. If Tax Research needs court-style sealed-party redaction (e.g. "Doe v. Smith" where Smith is sealed), file a Shield issue to add a `sealed_party` recognizer to the engine's `apps/engine/app/recognizers/` directory and update `compliance/recognizers.md` (hard rule 5). That recognizer will then apply to every app's traffic, not just Tax Research — which is fine because false positives on a "<SEALED_NAME_n>" pattern in MyBooks bookkeeping are negligible.
 
 ---
 
@@ -195,9 +201,7 @@ The hardest phase. The order matters because each step is independently testable
 - [ ] Tool inputs: when the stream consumer parses the assembled JSON at `chat.ts:232`, Shield's recursive redactor has ALREADY been applied at the gateway. The consumer receives the post-redaction `input`.
 - [ ] Verify: send a prompt that prompts `web_fetch` against `https://example.com?account=234-56-7890`. Confirm Shield audit shows the URL with the SSN tokenized; confirm `primary_source_consultations.url` in DB has the cleartext URL re-identified.
 - [ ] Tool results: same recursive walk on the gateway → client path. Verify Shield's audit + the persisted `response_excerpt`.
-- [ ] **Custom skills uploaded via the multipart bypass**: route the `fetch()` at `skills.ts:112` through Shield. Two options:
-  - (a) Wait for Shield to ship a `/v1/skills` proxy route (file a Shield issue; out of scope for the Tax Research team).
-  - (b) Document a v1 firm policy: "Skills are admin-curated and trusted; Shield audits but doesn't redact." This matches MyBooks' `entityContext` trust posture for operator-curated content.
+- [ ] **Custom skills uploaded via the multipart bypass**: v1 ships with the trust-by-policy carve-out (§4.4) — the `skills.ts:112` fetch still calls Anthropic directly, NOT routed through Shield. Add: (a) a Tax-Research-side audit row per skills upload (operator ID + filename + sha256), (b) a UI warning banner on the upload form, and (c) a Shield issue tracking the v1.2 `POST /v1/skills` proxy work. Do NOT block v1 ship on the proxy.
 
 **Acceptance:** A turn that uses `web_fetch` with a PII-bearing URL is captured in Shield's audit as tokens; the user's chat UI shows the cleartext (re-id'd) URL; `primary_source_consultations` row has the re-id'd cleartext.
 
@@ -224,7 +228,7 @@ The hardest phase. The order matters because each step is independently testable
 
 - [ ] When Shield is down, chat shows "AI is temporarily unavailable" and the SSE connection closes cleanly (don't hang).
 - [ ] 429 backoff: honor Shield's `Retry-After` header on the chat-submit button.
-- [ ] Skills upload: either (a) wait for Shield `/v1/skills` proxy, or (b) ship v1 with the documented trust policy and a TODO to add the proxy.
+- [ ] Skills upload: ship v1 with the trust-by-policy carve-out (§4.4 + Phase TR3). A v1.2 follow-up issue against Shield tracks the `POST /v1/skills` proxy that will close the carve-out; do not block v1 GA on it.
 - [ ] Add an integration test that triggers `code_execution` and verifies the sandbox output doesn't leak PII (the sandbox is Anthropic's; this is a defense check that Claude doesn't echo cleartext through code output).
 
 **Acceptance:** With Shield stopped, chat shows the expected error; no 500s. 429 backoff demonstrated. Code-execution PII echo absent.
@@ -314,13 +318,13 @@ Same shape as MyBooks (§8.4). Documented escape hatch, audit-logged, P0 inciden
 
 | # | Question | Owner | Resolution before |
 |---|---|---|---|
-| 1 | Does Shield ship the `tax-research` policy by default, or do we add it as part of TR0? | Shield owner | Phase TR0 |
-| 2 | Custom skills via multipart bypass: ship v1 with the trust-by-policy decision, or block on Shield's `/v1/skills` proxy? Recommend (a) for the v1 cut. | TR PM + Shield owner | Phase TR3 |
+| 1 | Confirmed: Shield ships the `tax-research` policy in `apps/gateway/src/policy/built-in.ts` today. No TR0 work needed. | Shield owner | (resolved) |
+| 2 | Confirmed v1 cut: trust-by-policy carve-out for skills upload (§4.4 + Phase TR3). Shield v1.2+ proxy is a separate Shield issue. | TR PM + Shield owner | (resolved) |
 | 3 | Stream-batching latency: is +25 ms p99 the right threshold, or do we need tighter? Will depend on the firm's network path. | TR lead | Phase TR4 |
 | 4 | The 180 KB attachment context cap — Shield's `MAX_REQUEST_BYTES` defaults to 1 MB. Confirm a 180 KB attachment + a 50 KB conversation history fits. | Shield ops | Phase TR2 |
 | 5 | `chat_attachments.full_text` is the persisted OCR'd document text. Is THAT pre-redacted before storage, or kept as-is and only redacted at prompt-injection time? Pre-redact gives storage-side compliance; keep-as-is is cheaper. | TR lead | Phase TR5 |
-| 6 | If a court ruling cites a sealed party, the public PDF has "[REDACTED]" in place of the name. Should Shield's `sealed_party` recognizer treat that as a PII signal (re-redact bracketed redactions in attachment text)? | Shield owner | Phase TR5 (QA corpus) |
-| 7 | Anthropic's `extended-cache-ttl-2025-04-11` beta caches prompts for 1h. If Shield's session is purged before the cache expires, Anthropic still has a cached version of the (tokenized) prompt. Acceptable? | Compliance review | Phase TR2 |
+| 6 | If a court ruling cites a sealed party, the public PDF has "[REDACTED]" in place of the name. Should a new `sealed_party` recognizer (engine-side, global — see §4.8) treat that as a PII signal (re-redact bracketed redactions in attachment text)? Recognizer addition requires `compliance/recognizers.md` update per Shield hard rule 5. | Shield owner | Phase TR5 (QA corpus) |
+| 7 | Anthropic's `extended-cache-ttl-2025-04-11` beta caches prompts for 1h. If Shield's session is deleted before the cache expires, Anthropic still has a cached version of the (tokenized) prompt. Acceptable? | Compliance review | Phase TR2 |
 | 8 | The MCP server (separate JWT auth, rate-limit 100/60s) — out of scope for this plan? Confirm. | TR lead | Phase TR0 |
 
 ---

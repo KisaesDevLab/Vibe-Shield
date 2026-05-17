@@ -2,7 +2,7 @@
 
 **Target app:** [Vibe-Transaction-Convertor](https://github.com/KisaesDevLab/Vibe-Transaction-Convertor)
 **Repo path (local):** `C:\Users\kwkcp\Projects\Vibe-Transaction-Convertor`
-**Shield version this plan targets:** `v1.1.4+` (with the `cpa-converter-output` policy + materialize endpoint)
+**Shield version this plan targets:** `v1.1.5+` (`cpa-converter-output` policy + `/v1/sessions/:id/materialize` endpoint, both confirmed present in `apps/gateway/src/policy/built-in.ts` and `apps/gateway/src/routes/materialize.ts`)
 **Plan version:** 1.0 (initial)
 
 ---
@@ -17,7 +17,7 @@ So the integration is in two halves:
 
 1. **LLM side** (smaller): replace the vendored raw-fetch Anthropic provider with the Shield client. Apply the `cpa-converter-output` policy + per-conversion session. Tokenize the things the LLM sees: bank name, statement period dates (whitelist), transaction descriptions, masked-last-4 (already non-PII). Most of the LLM input is amounts + dates + already-masked digits — low PII surface compared to MyBooks.
 
-2. **Export side** (the unique part): when the user clicks "Export to OFX," the route loads `account.accountNumber` from Postgres (cleartext at rest, encrypted DEK-per-tenant via Shield's vault), calls `Shield POST /v1/sessions/<id>/materialize` with the `cpa-converter-output` policy, receives the cleartext account number, writes it into `<ACCTID>` in the XML.
+2. **Export side** (the unique part): when the user clicks "Export to OFX," the route loads two distinct kinds of payload — (a) the operator-input `accounts.accountNumberEncrypted` (decrypted in-process with the Converter's own AES-256-GCM key per §4.2) and (b) the tokenized `transactions.description/name/memo` columns. The OFX writer assembles a JSON payload combining both, calls `Shield POST /v1/sessions/<id>/materialize` (which resolves any `<PERSON_n>` / `<US_BANK_ACCOUNT_n>` tokens in the payload via the session's vault), receives the materialized cleartext, and writes the result into the OFX/QFX/QBO XML.
 
 The `cpa-converter-output` policy is the only Shield policy that permits the materialize call — every other policy returns 403. This is the canonical "I need cleartext back" use case.
 
@@ -67,7 +67,7 @@ The LLM ingests OCR'd markdown from the PDF and returns structured extraction. P
 | `accounts.accountNumber` | **Cleartext today** | OPERATOR-input via UI. Must be encrypted via Shield's per-tenant DEK post-integration. |
 | `accounts.routingNumber` | **Cleartext today** | Same — must be encrypted. |
 | `accounts.intuBid`, `intuOrg` | Cleartext (not PII; public BID) | Stay as-is. |
-| `transactions.description`, `name`, `memo` | Cleartext today | These come from OCR; some are PII. Storage decision: encrypt at rest (per-tenant DEK) OR tokenize-on-write + materialize-on-export. See §4.3. |
+| `transactions.description`, `name`, `memo` | Cleartext today | These come from OCR + LLM cleansing. Storage decision: persist tokens (`<PERSON_n>` etc.) populated by `/v1/messages` redaction; materialize via Shield at UI render and export. See §4.3. |
 | `statements.*` (balances, dates) | Cleartext | Numeric / dates only; no PII. |
 
 ### 2.4 What does NOT need Shield
@@ -134,43 +134,51 @@ Half B — materialize on export (unique, the canonical case for `cpa-converter-
 
 Half A reuses MyBooks/TB patterns; Half B is what makes this plan different.
 
-### 4.2 Storage decision: encrypt operator-input PII via Shield's vault
+### 4.2 Storage decision: account numbers use the Converter's own per-tenant DEK
 
-`accounts.accountNumber` + `accounts.routingNumber` are operator-input AND must appear in OFX output. The integration moves these from cleartext-at-rest to encrypted-via-tenant-DEK:
+`accounts.accountNumber` + `accounts.routingNumber` are operator-input. They never pass through the LLM and never need redaction — Claude doesn't see them. Therefore Shield's vault is the wrong layer to store them in (Shield's vault is populated as a side-effect of redacting LLM payloads; there is **no** direct vault-write API in v1.1.x, and adding one is out of scope for this integration).
+
+Use the same crypto pattern as Vibe-MyBooks' `PLAID_ENCRYPTION_KEY` and Vibe-Tax-Research's `MASTER_KEY`:
 
 - The Converter's `accounts` schema gets two new columns: `accountNumberEncrypted` (bytea), `routingNumberEncrypted` (bytea). The old `accountNumber`, `routingNumber` columns are deprecated.
-- On account creation, the Converter calls `Shield POST /v1/sessions/<conversion_session_id>/tokenize` to encrypt the cleartext under the Shield-managed DEK. Stores the wrapped ciphertext.
-- On export, the Converter calls `Shield POST /v1/sessions/<conversion_session_id>/materialize` (which is policy-gated to `cpa-converter-output`) to decrypt and use in the OFX writer.
-- During migration: a one-time backfill encrypts existing cleartext rows.
+- The Converter generates one `CONVERTER_ACCOUNT_ENCRYPTION_KEY` per appliance (32 raw bytes base64, preserved across re-renders via the same `_extract_env_value` pattern the appliance uses for VS_KEK / intake_key — file a Vibe-Appliance PR to add it to `env-templates/per-app/vibe-tx-converter.env.tmpl`).
+- AES-256-GCM, per-row IV, encryption library = the existing crypto helper the Converter uses for any other at-rest secret.
+- During migration: a one-time backfill encrypts existing cleartext rows, then drops the old columns.
 
-**Why through Shield's vault and not the Converter's own crypto:** the Converter's database is in the same Postgres instance as MyBooks and TB. If the Converter rolls its own DEK, an operator compromise of the Postgres key gets the Converter's data without going through Shield's per-tenant DEK + KEK chain. Routing through Shield's vault gives the Converter the same crypto posture as the rest of the Shield-protected vault.
+**Why not Shield's vault for these:** Shield's vault stores tokens that came out of recognizer-driven redaction. Account numbers are never tokenized (they never reach `/v1/messages`); they have no `<US_BANK_ACCOUNT_n>` token to resolve. Pushing them through Shield would require either (a) a new `POST /v1/sessions/:id/vault` endpoint to write arbitrary ciphertext (new Shield work, defers Converter integration) or (b) a synthetic `/v1/messages` call whose only purpose is to populate the vault (an ugly anti-pattern). The per-tenant-DEK approach is the same posture every other Vibe app uses for app-private secrets — no novel crypto, no new Shield endpoints.
 
-### 4.3 Transaction descriptions: tokenize-on-write OR encrypt-at-rest
+### 4.3 Transaction descriptions: tokens from `/v1/messages` redaction, materialized at export
 
-`transactions.description`, `transactions.name`, `transactions.memo` come from OCR + LLM-cleansing. These contain PII. Two options:
+`transactions.description`, `transactions.name`, `transactions.memo` come from OCR + LLM-cleansing — they DO pass through `/v1/messages`, so Shield's recognizer pipeline tokenizes them as a side-effect of that call. The Converter then has two choices for how to persist:
 
-**Option A (recommended for v1): Encrypt at rest via Shield's vault.**
+**Option B (the right choice for the Converter): Store the tokens; materialize at export.**
 
-- Store ciphertext only. On UI render, materialize via `cpa-converter-output` (which is what the user already has authority to see).
-- Same posture as `accountNumberEncrypted`.
+- The Converter's LLM cleansing call to `/v1/messages` returns the cleansed text with `<PERSON_n>` / `<US_BANK_ACCOUNT_n>` etc. tokens already in place (and Shield's vault has the cleartext for each one, scoped to the conversion session).
+- Persist the **tokenized** string in the description columns. No cleartext PII in the Converter's at-rest data.
+- On UI render: call `Shield POST /v1/sessions/:id/materialize` to resolve tokens for the operator's view. (Materialize is policy-gated to `cpa-converter-output` per §4.5; the Converter's UI request uses the same vs_live key + session as the export path, so the gate passes.)
+- On export: same `/v1/sessions/:id/materialize` call against the OFX payload before writing the file.
 
-**Option B: Tokenize on write; materialize at export.**
+**Option A (do not adopt): Encrypt at rest via the Converter's own DEK.**
 
-- Store `<PERSON_n>` tokens in the description columns. UI renders by calling Shield's per-session re-id endpoint. Export materializes for the OFX file.
-- More work; only useful if the UI needs to differentiate "I'm allowed to see this" vs "I'm allowed to export this." For the Converter's single-firm posture, the UI viewer == the OFX exporter (same person), so the policy gate is the same.
+- Would require the Converter to receive cleartext from Shield (using the `policy_name='cpa-converter-output'` re-id path or a special-case override) and immediately re-encrypt with its own key. Two layers of crypto, no security gain, and the cleartext exists in process memory longer than necessary. Skip.
 
-**Pick Option A for v1.** Revisit if a future multi-role UI emerges.
+**Why Option B is the right inversion of the standard pattern:** every other Vibe app uses `cpa-bookkeeping-balanced` with `reid.mode='full'` — they want re-identified cleartext in their UI render. The Converter explicitly wants the opposite: cleartext NEVER appears anywhere in the Converter's database, and the materialize event is the single audited cleartext-emission point. That's exactly what `cpa-converter-output` (`reid.mode='none'`) plus the materialize endpoint deliver.
+
+**Session-DEK lifetime is the gotcha.** The vault rows live only as long as the session does. If the conversion session is deleted (DELETE /v1/sessions/:id) before export, the tokens become permanently unresolvable. The Converter MUST hold the conversion session open from upload through export-and-download. See §4.4 lifecycle for the timing.
 
 ### 4.4 Session lifecycle: per-conversion (per-statement)
 
 A "conversion" is one PDF upload → one OFX/CSV/QBO/QFX output. The Shield session lifecycle maps to that:
 
-- **Open** session at upload (`POST /api/uploads/:accountId` in `uploads.ts:70`). Session ID stored on the `statements` row.
-- **Use** session ID on every LLM extraction call (the recognizer pipeline tokenizes the markdown; the tokens are deterministic within the session).
-- **Use** session ID at export (materialize call uses this session's vault).
-- **Purge** session after the user downloads the export (or after a configurable retention window — default 30 days, matching the existing maintenance worker's PDF retention).
+- **Open** session at upload (`POST /api/uploads/:accountId` in `uploads.ts:70`) with `policy_name='cpa-converter-output'`. Session ID stored on the `statements` row.
+- **Use** session ID on every LLM extraction call (the recognizer pipeline tokenizes the markdown; the tokens are deterministic within the session and the vault holds the cleartext for each one).
+- **Use** session ID for every UI render of transactions (materialize tokenized descriptions for operator display).
+- **Use** session ID at export (materialize tokenized payload for the OFX file).
+- **Delete** session via `DELETE /v1/sessions/:id` after the user downloads the export AND a configurable retention window expires (default 30 days, matching the existing maintenance worker's PDF retention). Early deletion makes tokens permanently unresolvable — the description columns stay readable as tokens but can no longer be materialized.
 
 Multi-statement batches: each statement gets its own session. The user's "import 30 statements at once" flow opens 30 sessions in parallel.
+
+**Hard constraint:** the session must not be deleted between upload and final export. If retention policy + user behaviour conflict (e.g., the user comes back on day 31 to re-export), the only recovery is re-OCR + re-extract from the original PDF — which is acceptable for the Converter because the PDF is the source of truth.
 
 ### 4.5 The materialize call gate
 
@@ -216,11 +224,11 @@ The Converter doesn't stream. The LLM is a batch extractor: one call, one tool_u
 
 - [ ] Vibe Appliance has Shield enabled.
 - [ ] Converter operator can `curl http://vibe-shield-gateway:8080/health`.
-- [ ] Tenant API key issued for `tenantId: tx-converter-prod`, `appId: tx-converter`.
-- [ ] Verify `cpa-converter-output` policy exists in Shield (`GET /v1/admin/policies`). If missing, Shield team adds it before Converter kickoff.
-- [ ] Verify the policy's `materialize` field is true.
+- [ ] Tenant API key issued for `tenantId: tx-converter-prod`, `appId: converter` (must match `CONVERTER_OUTPUT.allowed_apps` in Shield's `built-in.ts`).
+- [ ] Verify `cpa-converter-output` policy is in the response of `GET /v1/admin/policies`. If missing on the running gateway, the operator is pinned to an older Shield image — upgrade to v1.1.5+ before Converter kickoff.
+- [ ] Verify `cpa-converter-output` shows `reid.mode = 'none'` and `allowed_apps = ['converter']` in that response. (The materialize gate is enforced in `apps/gateway/src/routes/materialize.ts` by matching the active policy NAME against `CONVERTER_OUTPUT.name`; there is no separate `materialize: true` boolean on the policy.)
 
-**Acceptance:** `curl -X POST -H "X-Admin-Key: ..." -H "content-type: application/json" -d '{"policy":"cpa-converter-output"}' http://vibe-shield-gateway:8080/v1/sessions/test/materialize` returns a Shield envelope (400 "session not found" is success — proves the policy gate passes auth).
+**Acceptance:** `curl -X POST -H "Authorization: Bearer vs_live_..." -H "content-type: application/json" -d '{"payload":{}}' http://vibe-shield-gateway:8080/v1/sessions/<real-uuid>/materialize` against a session opened under `cpa-converter-output` returns 200 with `materialized: {}`. Against a session opened under `cpa-bookkeeping-balanced`, the same call returns 403 `materialize requires policy "cpa-converter-output"`.
 
 ### Phase C1 — Half A: LLM SDK swap (env var flip + key)
 
@@ -249,68 +257,62 @@ The Converter doesn't stream. The LLM is a batch extractor: one call, one tool_u
 
 **Acceptance:** Shield audit for the extraction job shows the masked prompt. Extraction returns the same schema as before. `statements.shieldSessionId` is populated for every new upload.
 
-### Phase C3 — Half B: store account PII via Shield vault
+### Phase C3 — Half B: encrypt account PII with the Converter's own per-tenant DEK
 
+- [ ] Generate `CONVERTER_ACCOUNT_ENCRYPTION_KEY` (32 raw bytes base64). Add it to `.appliance/manifest.json` env block as a `generated:base64-32bytes` field. File a paired Vibe-Appliance PR adding `@CONVERTER_ACCOUNT_ENCRYPTION_KEY@` substitution + preservation across re-renders (same `_extract_env_value` pattern that VS_KEK uses today in `lib/enable-app.sh:797–807`).
 - [ ] Migrate `accounts` table:
-  - Add `accountNumberEncrypted` (bytea), `routingNumberEncrypted` (bytea), `accountNumberSessionId` (uuid).
-  - On account create / update, call `Shield POST /v1/sessions/<id>/tokenize` (or the equivalent vault-write endpoint — see Shield's `TokenVault.allocate` shape). Store the ciphertext.
-  - Backfill existing rows: for each existing account, open a Shield session under `cpa-converter-output`, tokenize the cleartext, store the ciphertext, drop the cleartext columns.
-- [ ] **CRITICAL:** the backfill must happen during the Phase C3 deploy with the gateway down for writes. Operators must follow the runbook (no live writes during backfill).
-- [ ] After backfill, deprecate the cleartext `accountNumber`, `routingNumber` columns. Two-release deprecation: keep the columns for one release with read-fallback so a rollback is possible.
+  - Add `accountNumberEncrypted` (bytea), `routingNumberEncrypted` (bytea), each with a per-row 12-byte GCM IV column.
+  - Crypto helper: AES-256-GCM using `CONVERTER_ACCOUNT_ENCRYPTION_KEY` (same library the Converter uses for any other at-rest secret).
+  - On account create / update: encrypt cleartext, store ciphertext + IV. Cleartext never persisted.
+  - Backfill existing rows: encrypt each cleartext value in-place during the deploy migration, then drop the cleartext columns.
+- [ ] **CRITICAL:** backfill runs as an atomic migration; the Converter accepts no account writes during it. Operators follow the runbook (the maintenance worker is paused, the API returns 503 on `POST /api/accounts`).
+- [ ] After backfill, drop the cleartext `accountNumber`, `routingNumber` columns in the next release (keep one release of read-only fallback for rollback safety, then drop).
 
-**Acceptance:** A new account creation results in cleartext NEVER hitting Postgres (verify by sniffing Postgres logs during the test). Reading the account via the UI materializes correctly under the `cpa-converter-output` policy.
+**Acceptance:** A new account creation results in cleartext NEVER hitting Postgres in cleartext form (verify by checking `pg_dump` output for the test fixture's account number string). The account number round-trips: write → encrypt → store → load → decrypt → use in OFX. The Converter container has access to `CONVERTER_ACCOUNT_ENCRYPTION_KEY` but Shield's gateway/admin/engine containers do NOT (key scoped to converter only via the per-app env file).
 
 ### Phase C4 — Half B: materialize at export
 
-- [ ] In `exports.ts:118–173` (the OFX assembly), replace:
+- [ ] In `exports.ts:118–173` (the OFX assembly), assemble a JSON payload that mixes (a) the operator-input account/routing numbers (decrypted in-process via the Converter's own DEK per §4.2) with (b) the tokenized transaction descriptions (loaded as-stored from `transactions.description/name/memo`):
   ```ts
-  const ofxStmt: Stmt = {
-    bankAccountInfo: {
-      bankId: account.routingNumber, // OLD: cleartext from DB
-      accountId: account.accountNumber, // OLD: cleartext from DB
-      ...
-    },
-  };
+  // Decrypt operator-input fields with the Converter's own key.
+  const accountId = converterCrypto.decrypt(account.accountNumberEncrypted, account.accountNumberIv);
+  const bankId    = converterCrypto.decrypt(account.routingNumberEncrypted, account.routingNumberIv);
+
+  // Build the OFX payload as JSON, leaving tokens in the description fields.
+  const ofxPayload = buildOfxJson({ accountId, bankId, transactions });
+
+  // One Shield materialize call resolves every <PERSON_n> / <US_BANK_ACCOUNT_n>
+  // token in the payload. Operator-input cleartext (accountId, bankId) is
+  // already cleartext and passes through unchanged.
+  const { materialized, output_hash } = await shield.post(
+    `/v1/sessions/${statement.shieldSessionId}/materialize`,
+    { payload: ofxPayload, output_filename: `${statement.id}.ofx` },
+  );
+
+  // Serialize materialized JSON to XML.
+  const ofxXml = xmlWriter.write(materialized);
   ```
-  with:
-  ```ts
-  const materialized = await shield.sessions.materialize({
-    sessionId: statement.shieldSessionId,
-    policy: 'cpa-converter-output',
-    fields: {
-      accountId: account.accountNumberEncrypted,
-      bankId: account.routingNumberEncrypted,
-    },
-  });
-  const ofxStmt: Stmt = {
-    bankAccountInfo: {
-      bankId: materialized.bankId,
-      accountId: materialized.accountId,
-      ...
-    },
-  };
-  ```
-- [ ] The XML writer (`xml-writer.ts:36–120`) sees the materialized cleartext exactly once, writes it to the buffer, and returns. The cleartext is held in memory only for the duration of one HTTP response.
-- [ ] **Never log the materialized values.** The materialize call's success/failure is auditable; the values themselves are not loggable.
+- [ ] The XML writer (`xml-writer.ts:36–120`) sees the materialized cleartext exactly once, writes it to the buffer, and returns. Cleartext is held in memory only for the duration of one HTTP response.
+- [ ] **Never log the materialized values.** Shield's audit captures the materialize event with `output_hash` (SHA-256 of the serialized output) — that's the auditable record, not the values.
 
-**Acceptance:** Download an OFX file for a statement; verify `<ACCTID>` and `<BANKID>` contain the original cleartext numbers. Verify the Converter's logs for the same request show no cleartext. Verify Shield's audit log shows one materialize event with hashes only.
+**Acceptance:** Download an OFX file for a statement; verify `<ACCTID>` and `<BANKID>` contain the operator-input cleartext numbers; verify `<NAME>` and `<MEMO>` contain re-identified transaction descriptions. Verify the Converter's logs for the same request show no cleartext PII. Verify Shield's audit log shows one `materialize` event with `output_hash` populated and a row in `vs_audit` whose `payload_hash` matches `sha256(serialized output)`.
 
-### Phase C5 — Transaction-description encryption
+### Phase C5 — Transaction-description tokenization (Option B from §4.3)
 
-- [ ] Per §4.3 Option A: encrypt `transactions.description`, `name`, `memo` at rest via Shield's vault.
-- [ ] On UI render of a statement detail page, materialize per-batch (one materialize call returning 50 transaction descriptions, not 50 calls).
-- [ ] On OFX export, the same materialize call returns the cleartext for `<NAME>` and `<MEMO>`.
-- [ ] Backfill existing transaction rows (same runbook posture as C3).
+- [ ] Persist the **tokenized** output of the `/v1/messages` cleansing call directly into `transactions.description`, `name`, `memo`. No additional encryption layer — tokens are already opaque, and Shield's vault holds the cleartext keyed by the conversion session.
+- [ ] On UI render of a statement detail page: bundle every tokenized description into a single JSON array, call `POST /v1/sessions/<statement.shieldSessionId>/materialize` once per page render (not per row), and render the materialized cleartext. Cache materialized values in the request-scoped React Query cache; never write them to localStorage or the Converter's DB.
+- [ ] On OFX export: the same materialize call (§C4) resolves description tokens in the same payload pass as the account-field substitutions.
+- [ ] Backfill existing rows: for each transaction, open a one-time Shield session under `cpa-converter-output`, send the cleartext through `/v1/messages` with a no-op prompt that triggers the recognizer pipeline, persist the tokenized form, drop cleartext columns. Same runbook posture as C3 (paused writes during backfill).
 
-**Acceptance:** Statement detail page renders correctly with re-identified descriptions; `transactions.description` in Postgres is ciphertext; export produces correct OFX.
+**Acceptance:** Statement detail page renders re-identified descriptions to the operator. `pg_dump transactions` shows tokenized strings only (`grep -E '<PERSON_|<US_BANK_ACCOUNT_'` matches; `grep` for the test fixture's cleartext name returns zero). OFX export produces the same `<NAME>` and `<MEMO>` values as the pre-Shield code did.
 
-### Phase C6 — Session purge + retention
+### Phase C6 — Session deletion + retention
 
-- [ ] When the user explicitly deletes a statement, `Shield POST /v1/sessions/<id>/purge`.
-- [ ] Maintenance worker (`maintenance.worker.ts`) gains a "purge old shield sessions" sweep: any statement older than 30 days that's been exported AND the user has downloaded the file → purge.
-- [ ] Document the retention policy explicitly. The cleartext-decrypt window is bounded.
+- [ ] When the user explicitly deletes a statement, call `Shield DELETE /v1/sessions/<statement.shieldSessionId>` (idempotent — second DELETE still returns 204).
+- [ ] Maintenance worker (`maintenance.worker.ts`) gains a "delete old shield sessions" sweep: any statement older than 30 days that's been exported AND the user has downloaded the file → DELETE the session. The tokenized columns remain in the Converter's DB (they're already opaque) but can no longer be materialized.
+- [ ] Document the retention policy explicitly. The cleartext-resolve window is bounded; after deletion the tokens are permanently unresolvable. Recovery path: re-OCR the original PDF.
 
-**Acceptance:** After purge, attempting materialize on the session's tokens returns "session expired." The statement's audit log shows the purge event.
+**Acceptance:** After DELETE, attempting `POST /v1/sessions/<id>/materialize` on the session's tokens returns 404 "session not found". The statement's Converter-side audit row shows the deletion event with timestamp.
 
 ### Phase C7 — Fail-closed + test coverage
 
@@ -407,14 +409,15 @@ The Converter's bypass is more dangerous than other apps' because it would re-ex
 
 | # | Question | Owner | Resolution before |
 |---|---|---|---|
-| 1 | Does Shield ship `cpa-converter-output` policy by default, or do we add it as part of C0? | Shield owner | Phase C0 |
-| 2 | The vault tokenize/materialize endpoints used here — confirm they exist in Shield v1.1.4+ OR file the issue. | Shield owner | Phase C3 |
+| 1 | Confirmed: `cpa-converter-output` ships in Shield's `apps/gateway/src/policy/built-in.ts` today; no C0 work needed. | Shield owner | (resolved) |
+| 2 | Confirmed: `POST /v1/sessions/:id/materialize` exists (`apps/gateway/src/routes/materialize.ts:54`) and is policy-gated to `cpa-converter-output`. There is NO `/v1/sessions/:id/tokenize` endpoint — Phase C3 uses the Converter's own per-tenant DEK for operator-input fields instead (§4.2). | Shield owner | (resolved) |
 | 3 | Backfill (C3 + C5): one-shot during a maintenance window, or rolling? Rolling needs dual-read logic during the migration. | Converter lead | Phase C3 |
 | 4 | If the operator types a 12-digit account number in the UI but the bank statement OCR shows a different number (typo / wrong account picked), does the export silently materialize the operator-input value, or warn? | Converter PM | Phase C4 |
 | 5 | The local Vibe LLM Gateway (Qwen3-8B) — same prompt redaction posture if firms opt for local LLM? Or does local LLM see cleartext (since it never leaves the appliance anyway)? | Converter PM + Compliance | Phase C1 |
 | 6 | Transaction description encryption (C5): does the UI need per-page materialize calls (paginated 25 txns at a time), or one bulk per statement? Latency implications. | Converter lead | Phase C5 |
 | 7 | Phase 33 in the Converter's roadmap adds raw-memo storage (separate from cleansed-name). Same encryption posture as description? | Converter PM | Phase C5 |
 | 8 | The `intuOrg` value (bank name) — operator-input but public information. Encrypt anyway for posture consistency, or leave cleartext for query simplicity? | Compliance | Phase C3 |
+| 9 | Vibe-Appliance PR to add `@CONVERTER_ACCOUNT_ENCRYPTION_KEY@` substitution + preservation in `lib/enable-app.sh` and `env-templates/per-app/vibe-tx-converter.env.tmpl`. Same pattern as VS_KEK (`enable-app.sh:797–807`). | Appliance owner + Converter lead | Phase C3 |
 
 ---
 
@@ -423,7 +426,7 @@ The Converter's bypass is more dangerous than other apps' because it would re-ex
 - **Shield BUILD_PLAN.md §1** — compliance objectives.
 - **Shield `apps/gateway/src/policy/built-in.ts`** — `cpa-converter-output` policy definition.
 - **Shield `apps/gateway/src/routes/materialize.ts`** — the materialize endpoint.
-- **Shield `packages/schema/src/vault/token-vault.ts`** — vault read/write API.
+- **Shield `packages/schema/src/vault/token-vault.ts`** — vault read API (internal — populated as a side-effect of `/v1/messages` redaction; no direct external write).
 - **Shield `compliance/integrations/README.md`** — common patterns.
 - **Converter `packages/extractor/src/llm-client.ts:540–552`** — base URL config (already honors `ANTHROPIC_BASE_URL`).
 - **Converter `packages/extractor/src/llm-client.ts:680–742`** — the `extract()` entry.

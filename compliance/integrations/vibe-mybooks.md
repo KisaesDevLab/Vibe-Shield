@@ -126,7 +126,9 @@ The schema already has a per-tenant `piiProtectionLevel` enum (`strict | standar
 |---|---|
 | `strict` | `cpa-bookkeeping-strict` (ZDR required, no materialize, all backstops fail-closed) |
 | `standard` | `cpa-bookkeeping-balanced` (re-id allowed, balanced backstops) — default |
-| `permissive` | `cpa-bookkeeping-permissive` (re-id allowed, lower-confidence backstops fail open) |
+| `permissive` | `cpa-bookkeeping-balanced` (same as standard; see note) |
+
+Note: Shield ships three CPA-shaped policies — `cpa-bookkeeping-strict`, `cpa-bookkeeping-balanced`, and `cpa-converter-output` (Converter-specific). There is no separate "permissive" policy today; mapping `permissive → balanced` is the right behaviour because Shield's recognizer set is uniform across policies and "permissive" in MyBooks' UI is really about backstop strictness, not entity coverage. If a future MyBooks workflow needs a genuinely more relaxed posture (e.g. lower-confidence backstops fail-open), file a Shield issue to add `cpa-bookkeeping-permissive` to `apps/gateway/src/policy/built-in.ts` before relying on it here.
 
 Add the policy name to every Shield request via the `policy_name` field. Shield's PolicyResolver handles the rest.
 
@@ -134,13 +136,13 @@ Add the policy name to every Shield request via the `policy_name` field. Shield'
 
 Each MyBooks fiscal period gets one Shield session. Categorization, receipt OCR, statement parsing, chat — all within one period share a session ID. This means re-identifying a vendor name in turn 1 of a chat thread produces the same `<PERSON_5>` token in turn 17.
 
-When MyBooks closes a period, it should call `Shield POST /v1/sessions/<id>/purge` (already exists) so the vault discards the DEK and tokens for that period become unrecoverable.
+When MyBooks closes a period, it should call `Shield DELETE /v1/sessions/<id>` so the vault discards the DEK and tokens for that period become unrecoverable. The endpoint is idempotent: a second DELETE returns 204 either way.
 
 ### 4.5 No materialize path
 
 `cpa-bookkeeping-balanced` does not allow materialize. The bookkeeper sees re-identified cleartext in the response, but there's no admin path to fetch raw tokens. This is intentional and different from the Converter.
 
-If MyBooks later adds a "redacted export for accountant review" feature, that needs the `cpa-bookkeeping-export` policy (to be added) — not `cpa-converter-output` (which is shaped for OFX).
+If MyBooks later adds a "redacted export for accountant review" feature, file a Shield issue to add an export-shaped policy (e.g. `cpa-bookkeeping-export` with `reid.mode = 'none'` and an allow-listed materialize path) — not `cpa-converter-output`, which is shaped for OFX/QFX and only allows the `converter` appId.
 
 ---
 
@@ -184,7 +186,7 @@ Each phase ends with explicit acceptance criteria. The app team estimates effort
   ```
 
 - [ ] Open a Shield session at the start of each MyBooks "interaction." For chat, this is the chat conversation; for one-off categorization, this is the request itself.
-- [ ] Call `Shield POST /v1/sessions/<id>/purge` from MyBooks' "close period" handler.
+- [ ] Call `Shield DELETE /v1/sessions/<id>` from MyBooks' "close period" handler.
 - [ ] Add config UI page: Settings → AI → PII Protection Level (dropdown: strict / standard / permissive).
 
 **Acceptance:** Sending the same vendor name twice within one session produces the same `<PERSON_n>` token (visible in Shield audit). After period close, attempting re-id on that session's tokens returns Shield's "session expired" envelope.
@@ -255,7 +257,7 @@ Add a `MyBooks → Shield → mock Anthropic` integration suite covering:
 
 - **categorization happy path**: send transaction description with a PERSON; verify outbound to mock-Anthropic has `<PERSON_n>` not the name; verify response is re-identified before reaching the bookkeeper UI.
 - **session reuse**: 3 categorization calls with the same payee; verify identical `<PERSON_n>` token across all 3.
-- **policy override**: with `piiProtectionLevel='strict'`, verify the `policy_name` field on Shield requests is `cpa-bookkeeping-strict`; with `'permissive'`, verify it is `cpa-bookkeeping-permissive`.
+- **policy override**: with `piiProtectionLevel='strict'`, verify the `policy_name` field on Shield requests is `cpa-bookkeeping-strict`; with `'standard'` or `'permissive'`, verify it is `cpa-bookkeeping-balanced` (the two MyBooks UI levels collapse to the same Shield policy until a `cpa-bookkeeping-permissive` is added — see §4.3).
 - **fail-closed on Shield down**: stop the mock Shield; verify categorization returns a 503 with the expected user-facing message.
 - **fail-closed on 429**: mock Shield returns 429 with `Retry-After: 30`; verify MyBooks honors it.
 

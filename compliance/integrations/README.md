@@ -4,7 +4,7 @@ These plans are the **contract** between Vibe Shield (the egress gateway) and ea
 
 Authority precedence (highest first):
 1. Vibe Shield `BUILD_PLAN.md` §1 — the six compliance objectives that any integration must satisfy.
-2. `CLAUDE.md` hard rules — the five things that must never happen.
+2. `CLAUDE.md` hard rules — the six things that must never happen.
 3. This plan (the per-app integration).
 4. The app team's internal build plan derived from this.
 
@@ -58,13 +58,14 @@ The four plans deliberately repeat themselves where the work is identical. Commo
 
 ## Hard-rule alignment
 
-Every plan inherits the five Shield hard rules and adds app-specific elaboration:
+Every plan inherits the six Shield hard rules and adds app-specific elaboration:
 
 1. **No cleartext PII in this app's logs, audit, error messages, or outbound Anthropic payloads.** Apps are responsible for their own log hygiene; Shield only handles redaction at the egress boundary.
 2. **Only path to Anthropic is through Shield.** Every plan explicitly bans direct `@anthropic-ai/sdk` instantiation outside the single Shield-wrapping client.
 3. **Fail-closed.** Apps must surface Shield unavailability as a 5xx to the user, not a fallback path.
 4. **Recall + precision regression-tested.** Each app contributes synthetic fixtures to `qa/corpus/` reflecting its specific document shapes (bank statements for MyBooks, GL exports for TB, tax research queries for the chat app, statement PDFs for TX Converter).
 5. **Recognizer changes documented.** If an app's PII shape forces a new recognizer or backstop, the change updates `compliance/recognizers.md` in this repo.
+6. **Real client data never enters this repo OR the consuming app's repo.** Synthetic fixtures only — names/SSNs/EINs in valid-format-but-not-issued ranges via Faker. Same rule that gates `qa/corpus/real/` in Shield applies to each app's own test corpus.
 
 ## Update cadence
 
