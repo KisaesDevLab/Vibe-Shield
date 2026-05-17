@@ -19,6 +19,14 @@
     "./crypto": {
       "types": "./dist/crypto/index.d.ts",
       "import": "./dist/crypto/index.js"
+    },
+    "./db": {
+      "types": "./dist/db/index.d.ts",
+      "import": "./dist/db/index.js"
+    },
+    "./db/migrate": {
+      "types": "./dist/db/migrate.d.ts",
+      "import": "./dist/db/migrate.js"
     }
   },
   "scripts": {

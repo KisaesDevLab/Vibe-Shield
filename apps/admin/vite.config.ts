@@ -1,7 +1,17 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig({
+// Production builds bake `/__VIBE_BASE_PATH__/` as the asset base. The
+// nginx image's /docker-entrypoint.d/40-base-path.sh sed-substitutes
+// that sentinel with the runtime $VITE_BASE_PATH value at container
+// start, so a single image works at any mount point:
+//   - Vibe-Appliance path-prefix mode    → VITE_BASE_PATH=/shield/
+//   - Dedicated subdomain (domain mode)  → VITE_BASE_PATH=/
+//   - Custom standalone mount            → whatever the operator sets
+// Dev (`vite dev`) keeps base='/' so the dev URL stays clean and the
+// proxy below routes /v1/* to the local gateway without prefix mangling.
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? '/__VIBE_BASE_PATH__/' : '/',
   plugins: [react()],
   server: {
     port: 5173,
@@ -17,4 +27,4 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: true,
   },
-});
+}));

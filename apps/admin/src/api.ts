@@ -7,7 +7,15 @@
  * full Headers object. Errors expose status + endpoint, not the key.
  */
 
-const BASE = ''; // same-origin via Vite proxy in dev; same origin in prod
+// Derived from Vite's BASE_URL so admin fetches respect the runtime
+// mount point. In dev: BASE_URL='/' → BASE=''. In a production build
+// (which Vite compiles BASE_URL into as a string literal): BASE_URL
+// starts as the sentinel '/__VIBE_BASE_PATH__/' and gets sed-substituted
+// to the real prefix by the nginx entrypoint (e.g. '/shield/'), so
+// BASE ends up as '/shield' and fetches go to '/shield/v1/admin/...'.
+// Trailing slash trimmed so concatenating with leading-slash paths
+// doesn't double up.
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 export class AdminApiError extends Error {
   constructor(
