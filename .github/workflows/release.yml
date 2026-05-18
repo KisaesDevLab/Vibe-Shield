@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  # Manual escape hatch for force-rebuilding existing tags. Dispatch
+  # from the Actions tab on a tag ref, or:
+  #   gh workflow run Release --ref v1.3.0
+  workflow_dispatch: {}
 
 jobs:
   ghcr:
