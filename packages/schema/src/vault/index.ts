@@ -51,3 +51,37 @@ export type {
   AnthropicKeyRecord,
   AnthropicKeyStatus,
 } from './appliance-secret-store.js';
+
+export {
+  UserExistsError,
+  UserNotFoundError,
+  UserStore,
+  roleSatisfies,
+} from './user-store.js';
+export type {
+  CreateUserInput,
+  Module,
+  Role,
+  UserRecord,
+  UserWithRoles,
+} from './user-store.js';
+
+export {
+  MagicLinkExpiredError,
+  MagicLinkInvalidError,
+  MagicLinkStore,
+  generateToken as generateMagicLinkToken,
+  hashToken as hashMagicLinkToken,
+} from './magic-link-store.js';
+export type { IssueResult as MagicLinkIssueResult } from './magic-link-store.js';
+
+export {
+  SessionInvalidError,
+  UserSessionStore,
+  generateSessionToken,
+  hashSessionToken,
+} from './user-session-store.js';
+export type {
+  IssuedSession,
+  ResolvedSession,
+} from './user-session-store.js';

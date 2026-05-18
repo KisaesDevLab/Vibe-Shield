@@ -8,3 +8,7 @@ export * from './tenant-keys.js';
 export * from './api-keys.js';
 export * from './spend-records.js';
 export * from './appliance-settings.js';
+export * from './users.js';
+export * from './user-roles.js';
+export * from './magic-links.js';
+export * from './user-sessions.js';

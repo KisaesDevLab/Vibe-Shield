@@ -15,9 +15,13 @@ export default defineConfig(({ command }) => ({
   plugins: [react()],
   server: {
     port: 5173,
-    // Forward /v1/admin/* to the gateway during local dev.
+    // Forward /v1/* and /api/auth/* to the gateway during local dev.
     proxy: {
       '/v1': {
+        target: process.env.VITE_GATEWAY_URL ?? 'http://127.0.0.1:8080',
+        changeOrigin: true,
+      },
+      '/api/auth': {
         target: process.env.VITE_GATEWAY_URL ?? 'http://127.0.0.1:8080',
         changeOrigin: true,
       },

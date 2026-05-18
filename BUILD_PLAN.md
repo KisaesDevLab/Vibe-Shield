@@ -318,37 +318,37 @@ Pre-prod checklist, beta-firm review of `vs_recognizer_misses`, KEK rotation reh
 
 ---
 
-### Phase 24 — [addendum B/C] Identity v2: users + magic-link auth + per-module RBAC
+### Phase 24 — [addendum B/C] Identity v2: users + magic-link auth + per-module RBAC **[shipped, v1.3]**
 
-The current admin model is a single `GATEWAY_ADMIN_KEY` header. Modules 2 + 3 and several of the future operator workflows need a real user model. Per-module RBAC replaces the single admin bit.
+Replaced the single `GATEWAY_ADMIN_KEY` header with a real user model + per-module RBAC. Magic-link sign-in is the primary path; the legacy `X-Admin-Key` header continues to work as a parallel auth method for bootstrap and operator scripts.
 
-**Items:**
+Shipped items:
 
-- `users` table (id, email, is_org_admin bool, created_at, last_login_at)
-- `user_sessions` table (magic-link consumed → session token with TTL)
-- `user_roles` table (user_id, module enum('redact','scan','compliance'), role enum('viewer','operator','admin')); unique on `(user_id, module)`
-- Magic-link flow: `POST /api/auth/request-link` → SMTP → `GET /api/auth/consume?token=…` → session cookie
-- `requires(module, min_role)` middleware replaces the single admin gate; `adminAuthMiddleware` becomes a thin compatibility wrapper for the legacy `X-Admin-Key` path during migration
-- Bootstrap admin: first install creates one `is_org_admin=true` user with `admin` role in every module
-- Admin UI gains a Users page (org_admin only); LoginGate switches from key paste to magic-link request
-- Audit events `user.created`, `user.role_changed`, `user.magic_link_requested`, `user.magic_link_consumed`
-- Tests: role matrix enforcement at each `/v1/*` endpoint, magic-link expiry, bootstrap idempotence
+- `vs_users` table (UUID id, email unique-where-active, `is_org_admin`, `created_at`, `last_login_at`, `disabled_at` soft-delete)
+- `vs_user_sessions` table (32-byte tokens, SHA-256 hash-stored, sliding 24h idle TTL, `revoked_at` tombstone)
+- `vs_user_roles` table (`(user_id, module)` PK, CHECK constraints on module enum + role enum)
+- `vs_magic_links` table (single-use, 15-min TTL, hash-stored, `requested_ip` for abuse analysis)
+- Magic-link flow: `POST /api/auth/request-link` (anti-enumeration: 204 whether email exists or not) → SMTP → `GET /api/auth/consume?token=…` → sets `vs_session` cookie + 302s to `/`
+- `requires(module, min_role)` + `requiresOrgAdmin()` middleware factories in `apps/gateway/src/middleware/requires.ts`
+- `adminAuthMiddleware` now accepts an `org_admin` session OR the `X-Admin-Key` header — both paths reach `/v1/admin/*`
+- Bootstrap admin: when `vs_users` is empty AND `BOOTSTRAP_ADMIN_EMAIL` is set, the email is created as `is_org_admin=true` with admin role on all three modules. Idempotent.
+- Admin SPA: `LoginGate` rewritten with magic-link request (default) + admin-key paste (fallback). `UsersView` (org_admin only) for invite + per-module role grid + disable.
+- Audit events on `module='identity'`: magic-link requested, session create, session purge (logout), user created, role changed.
+- Caddy + Vite both route `/api/auth/*` to the gateway so the session cookie is same-origin with the SPA.
 
-This is a prerequisite for Phases 26 + 27 because both rely on per-module roles. Phase 23.5's `X-Admin-Key` model continues to work in parallel until Phase 24 lands.
+Tests: end-to-end magic-link issue → consume → session, expired link rejection, X-Admin-Key backward-compat, non-org-admin RBAC denial, logout revocation. Unit tests on token format + `roleSatisfies` ranking.
 
 ---
 
-### Phase 25 — [addendum G2] Egress wrapper consolidation deltas
+### Phase 25 — [addendum G2] Egress wrapper consolidation deltas **[shipped, v1.3]**
 
-The gateway is already the only path to Anthropic. Three open items strengthen that property:
+The gateway is already the only path to Anthropic. Three deltas tightened that property:
 
-**Items:**
+- **G2.6 — Versioned prompt template registry.** `apps/gateway/src/prompts/registry.ts` loads `*.md` templates from `PROMPTS_DIR` at startup, computes SHA-256 of each, exposes `get(id)` and `list()`. Admin UI surfaces them at `/v1/admin/prompts`. The audit-recording wire-up lives in the orchestrator for Phase 28 to plug a `promptId` into.
+- **G2.8 — Per-tenant per-minute spend rate cap.** `apps/gateway/src/quota/spend-rate-limiter.ts` — fixed-window Redis-backed cap that sits alongside the month-cap. Pre-flight checks → 429 + Retry-After on breach; post-flight records actual cost; soft-warn at 80%. Env: `SPEND_RATE_PER_MINUTE_MICRODOLLARS`, default $100/min.
+- **G2.9 — Anthropic egress boundary.** ESLint `no-restricted-imports` blocks `@anthropic-ai/sdk` outside `apps/gateway/src/anthropic/`; `apps/gateway/src/anthropic/types.ts` re-exports the SDK types the rest of the gateway needs. `scripts/check-anthropic-boundary.sh` runs from `make boundary` (wired into `make verify`) as the CI belt-and-braces.
 
-- **G2.6** Versioned prompt template registry: markdown files under `apps/gateway/src/prompts/` keyed by `prompt_id`; the wrapper records the template SHA in the audit row for every Claude call (so a future review can prove which prompt produced which extraction)
-- **G2.8** Redis-backed leaky-bucket spend rate-limit per tenant per minute (current implementation is a flat per-minute cap); soft warning at 80%, hard cap at 100% queues calls
-- **G2.9** Boundary test: `import 'anthropic'` is allowed only from `apps/gateway/src/anthropic/`. Add an ESLint `no-restricted-imports` rule + a CI grep check that walks `apps/` and fails on offending imports. Catches a future regression where a new feature short-circuits the wrapper.
-
-Small phase; can ship before Phase 24.
+Tests: 9 on the registry (load + SHA stability + malformed handling), 7 on the rate limiter (per-tenant isolation, soft-warn, retry-after). Shipped before Phases 26–27 land so future module work cannot accidentally bypass the wrapper.
 
 ---
 

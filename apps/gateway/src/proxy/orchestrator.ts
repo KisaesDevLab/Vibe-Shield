@@ -12,7 +12,7 @@
 import type {
   Message,
   MessageCreateParamsNonStreaming,
-} from '@anthropic-ai/sdk/resources/messages.mjs';
+} from '../anthropic/types.js';
 import {
   type ApiKeyStore,
   type AuditLogger,
@@ -50,6 +50,10 @@ import {
   type SpendTracker,
   priceFor,
 } from '../quota/spend-cap.js';
+import {
+  SpendRateLimitExceededError,
+  type SpendRateLimiter,
+} from '../quota/spend-rate-limiter.js';
 import type { MessagesRequest } from '../schemas/messages.js';
 import { redactRequest } from './redactor.js';
 import { reidentifyResponse } from './reidentifier.js';
@@ -70,6 +74,9 @@ export interface OrchestratorDeps {
   defaultSessionTtlMinutes: number;
   rateLimiter?: RateLimiter;
   spendTracker?: SpendTracker;
+  /** Phase 25 G2.8 — per-minute spend rate cap. Checked pre-flight,
+   *  recorded post-flight. */
+  spendRateLimiter?: SpendRateLimiter;
   policies?: PolicyResolver;
   /** When the gateway is configured with ZDR. Policies that
    *  require ZDR refuse if this is false. */
@@ -175,6 +182,22 @@ export class ProxyOrchestrator {
         inputTokens: anthropicResponse.usage.input_tokens,
         outputTokens: anthropicResponse.usage.output_tokens,
       });
+    }
+    // Phase 25 G2.8 — feed the per-minute spend rate window with the
+    // actual call cost. Best-effort: a Redis hiccup must not fail a
+    // call that already happened against Anthropic.
+    if (
+      this.deps.spendRateLimiter !== undefined &&
+      this.deps.spendRateLimiter.enabled
+    ) {
+      const costMicrodollars = priceFor(
+        anthropicParams.model,
+        anthropicResponse.usage.input_tokens,
+        anthropicResponse.usage.output_tokens,
+      );
+      void this.deps.spendRateLimiter
+        .record(auth.tenantId, costMicrodollars)
+        .catch(() => undefined);
     }
     spendMicrodollars.inc(
       { tenant_id: auth.tenantId, app_id: auth.appId, model: anthropicParams.model },
@@ -288,6 +311,37 @@ export class ProxyOrchestrator {
           }
           throw new PermissionError(
             'monthly spend cap reached for this tenant',
+          );
+        }
+        throw err;
+      }
+    }
+    // Phase 25 G2.8 — per-minute spend rate cap. Distinct from the
+    // monthly cap above: this stops the *rate* so a runaway worker
+    // can't burn through a month of budget in a few minutes.
+    if (this.deps.spendRateLimiter !== undefined && this.deps.spendRateLimiter.enabled) {
+      try {
+        await this.deps.spendRateLimiter.check(auth.tenantId);
+      } catch (err) {
+        if (err instanceof SpendRateLimitExceededError) {
+          if (this.deps.audit !== undefined) {
+            void this.deps.audit
+              .append({
+                tenantId: auth.tenantId,
+                eventType: 'spend_cap_breached',
+                module: 'egress',
+                payload: {
+                  app_id: auth.appId,
+                  kind: 'rate',
+                  current_microdollars: err.currentMicrodollars.toString(),
+                  cap_microdollars: err.capMicrodollars.toString(),
+                },
+              })
+              .catch(() => undefined);
+          }
+          throw new RateLimitHttpError(
+            Number(err.capMicrodollars),
+            err.retryAfterSeconds,
           );
         }
         throw err;

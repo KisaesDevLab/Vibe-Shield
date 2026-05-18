@@ -65,6 +65,22 @@ const configSchema = z.object({
     .int()
     .nonnegative()
     .default(500_000_000),
+  /** Phase 25 G2.8 — per-tenant per-minute spend rate cap in
+   *  micro-dollars (USD * 1e6). Default $100/min. Set to 0 to disable.
+   *  Soft-warn at 80%; hard-throws at 100% (orchestrator → 429 + Retry-After). */
+  SPEND_RATE_PER_MINUTE_MICRODOLLARS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(100_000_000),
+  /** Phase 25 G2.6 — directory of versioned prompt template markdown
+   *  files. When unset or non-existent the registry loads empty (the
+   *  Phase 28 internal API is the first consumer; until then there are
+   *  no callers). */
+  PROMPTS_DIR: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? undefined : v)),
   /** Periodic Anthropic key re-probe interval (ms). v1.1 §3.7. Set to
    *  0 to disable; default 15 minutes. The re-probe never crashes the
    *  gateway — failures are surfaced via structured warn logs and the
@@ -79,6 +95,61 @@ const configSchema = z.object({
    *  the admin API refuses every request with 401. v1.1 §3.3. */
   GATEWAY_ADMIN_KEY: z.string().min(1).optional(),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+
+  // -- Phase 24 identity v2 -------------------------------------------
+  // All identity envs are nullable + treat empty string as "unset" so a
+  // docker-compose `${VAR:-}` default doesn't trip zod URL/email
+  // validators when the operator hasn't filled them in.
+  /** Public origin where the admin SPA is reachable. Magic-link URLs
+   *  are built off this (e.g., ``https://shield.firm.example``).
+   *  Required when SMTP is configured. */
+  PUBLIC_URL: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? undefined : v))
+    .refine((v) => v === undefined || /^https?:\/\//.test(v), {
+      message: 'PUBLIC_URL must be an http(s) URL when set',
+    }),
+  /** SMTP relay for magic-link emails. When unset, the request-link
+   *  endpoint returns 501 with a clear message — operators can still
+   *  use X-Admin-Key. */
+  SMTP_HOST: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? undefined : v)),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_USER: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? undefined : v)),
+  SMTP_PASSWORD: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? undefined : v)),
+  SMTP_FROM: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? undefined : v)),
+  /** STARTTLS opt-out for relays that don't support it. Default true. */
+  SMTP_TLS: z
+    .union([z.literal('true'), z.literal('false'), z.boolean()])
+    .transform((v) => v === true || v === 'true')
+    .default('true'),
+  /** Email of the first org_admin. On first boot, if vs_users is empty
+   *  and this is set, the user is created with admin on every module.
+   *  When unset and the table is empty, operators must use X-Admin-Key
+   *  to bootstrap manually. */
+  BOOTSTRAP_ADMIN_EMAIL: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? undefined : v))
+    .refine((v) => v === undefined || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v), {
+      message: 'BOOTSTRAP_ADMIN_EMAIL must be a valid email when set',
+    }),
+  /** Session cookie idle TTL, minutes. Default 24h. */
+  SESSION_IDLE_TTL_MINUTES: z.coerce.number().int().positive().default(24 * 60),
+  /** Magic-link TTL, minutes. Default 15. */
+  MAGIC_LINK_TTL_MINUTES: z.coerce.number().int().positive().default(15),
 });
 
 export type GatewayConfig = z.infer<typeof configSchema>;

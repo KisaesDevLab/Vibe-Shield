@@ -126,7 +126,7 @@ const spec = {
   openapi: '3.1.0',
   info: {
     title: 'Vibe Shield Gateway',
-    version: '1.1.3',
+    version: '1.3.0',
     description:
       'Anthropic-Messages-compatible gateway. Requires Authorization: Bearer vs_live_… on every protected route. Admin routes under /v1/admin/* use X-Admin-Key instead.',
   },
@@ -506,6 +506,257 @@ const spec = {
                       name: { type: 'string' },
                       version: { type: 'integer' },
                       zdr_required: { type: 'boolean' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+        },
+      },
+    },
+
+    // ---- Phase 23.5: Anthropic key management -----------------
+    '/v1/admin/anthropic/key': {
+      get: {
+        summary: 'Current Anthropic key status (source + fingerprint). Never returns plaintext.',
+        security: [{ adminKey: [] }],
+        responses: {
+          '200': {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['source', 'fingerprint', 'set_at'],
+                  properties: {
+                    source: { type: 'string', enum: ['env', 'db', 'unset'] },
+                    fingerprint: { type: ['string', 'null'], description: 'SHA-256 prefix (16 hex chars).' },
+                    set_at: { type: ['string', 'null'], format: 'date-time' },
+                    bootstrap_present: { type: 'boolean' },
+                  },
+                },
+              },
+            },
+          },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+        },
+      },
+      put: {
+        summary: 'Persist a new Anthropic key after probing it. Reloads the in-memory client atomically.',
+        security: [{ adminKey: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['key'],
+                properties: { key: { type: 'string', minLength: 1 } },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Saved + reloaded' },
+          '400': { description: 'Whitespace-only payload OR Anthropic rejected the key as non-commercial' },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+          '503': { description: 'Anthropic unreachable during probe' },
+        },
+      },
+      delete: {
+        summary: 'Revert to env-backed key. 409 when no env fallback exists.',
+        security: [{ adminKey: [] }],
+        responses: {
+          '204': { description: 'Cleared + reloaded with env key' },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+          '409': { description: 'No ANTHROPIC_API_KEY env fallback; refusing to clear' },
+        },
+      },
+    },
+
+    // ---- Phase 24: identity ----------------------------------
+    '/v1/admin/users': {
+      get: {
+        summary: 'List every user with per-module roles. Disabled users included.',
+        security: [{ adminKey: [] }],
+        responses: {
+          '200': {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    required: ['id', 'email', 'is_org_admin', 'created_at', 'roles'],
+                    properties: {
+                      id: { type: 'string', format: 'uuid' },
+                      email: { type: 'string', format: 'email' },
+                      is_org_admin: { type: 'boolean' },
+                      created_at: { type: 'string', format: 'date-time' },
+                      last_login_at: { type: ['string', 'null'], format: 'date-time' },
+                      disabled_at: { type: ['string', 'null'], format: 'date-time' },
+                      roles: {
+                        type: 'object',
+                        additionalProperties: { type: 'string', enum: ['viewer', 'operator', 'admin'] },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+        },
+      },
+      post: {
+        summary: 'Create a user (idempotent on email) and optionally send a magic-link invite.',
+        security: [{ adminKey: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email'],
+                properties: {
+                  email: { type: 'string', format: 'email', maxLength: 320 },
+                  isOrgAdmin: { type: 'boolean' },
+                  roles: {
+                    type: 'object',
+                    additionalProperties: { type: 'string', enum: ['viewer', 'operator', 'admin'] },
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': {
+            description: 'User created (or already existed); ``invited=true`` iff SMTP is configured',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['id', 'email', 'is_org_admin', 'invited'],
+                  properties: {
+                    id: { type: 'string', format: 'uuid' },
+                    email: { type: 'string', format: 'email' },
+                    is_org_admin: { type: 'boolean' },
+                    invited: { type: 'boolean' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Validation error or whitespace-only email' },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+          '409': { description: 'Active user with this email already exists' },
+        },
+      },
+    },
+    '/v1/admin/users/{id}/roles': {
+      put: {
+        summary: 'Set or replace this user\'s role on one module.',
+        security: [{ adminKey: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['module', 'role'],
+                properties: {
+                  module: { type: 'string', enum: ['redact', 'scan', 'compliance'] },
+                  role: { type: 'string', enum: ['viewer', 'operator', 'admin'] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '204': { description: 'Role set' },
+          '400': { description: 'Validation error' },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+          '404': { description: 'User not found' },
+        },
+      },
+    },
+    '/v1/admin/users/{id}/roles/{module}': {
+      delete: {
+        summary: 'Revoke this user\'s role on one module.',
+        security: [{ adminKey: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+          { name: 'module', in: 'path', required: true, schema: { type: 'string', enum: ['redact', 'scan', 'compliance'] } },
+        ],
+        responses: {
+          '204': { description: 'Role revoked (idempotent)' },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+        },
+      },
+    },
+    '/v1/admin/users/{id}/org-admin': {
+      put: {
+        summary: 'Toggle org_admin on a user. org_admin bypasses every per-module RBAC check.',
+        security: [{ adminKey: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['isOrgAdmin'],
+                properties: { isOrgAdmin: { type: 'boolean' } },
+              },
+            },
+          },
+        },
+        responses: {
+          '204': { description: 'Toggle applied' },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+          '404': { description: 'User not found' },
+        },
+      },
+    },
+    '/v1/admin/users/{id}': {
+      delete: {
+        summary: 'Disable a user (soft-delete; row stays for audit).',
+        security: [{ adminKey: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+        responses: {
+          '204': { description: 'Disabled' },
+          '400': { description: 'Cannot disable self' },
+          '401': { description: 'X-Admin-Key missing or invalid' },
+          '404': { description: 'User not found' },
+        },
+      },
+    },
+
+    // ---- Phase 25: prompt template registry ------------------
+    '/v1/admin/prompts': {
+      get: {
+        summary: 'List versioned prompt templates loaded from PROMPTS_DIR. Read-only.',
+        security: [{ adminKey: [] }],
+        responses: {
+          '200': {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    required: ['id', 'sha'],
+                    properties: {
+                      id: { type: 'string' },
+                      sha: { type: 'string', description: 'SHA-256 of the template file (64 hex chars).' },
+                      description: { type: ['string', 'null'] },
+                      model_hint: { type: ['string', 'null'] },
                     },
                   },
                 },

@@ -83,6 +83,22 @@ export class InvalidRequestError extends HttpError {
   }
 }
 
+/**
+ * 409 Conflict — idempotent re-creates, race-loss state, and similar.
+ * Phase 24: POST /v1/admin/users → ConflictError when the email is
+ * already taken by an active user. Phase 23.5: DELETE
+ * /v1/admin/anthropic/key uses this when no env fallback is available.
+ *
+ * Anthropic's error envelope kinds don't include "conflict", so we
+ * surface as ``invalid_request_error`` — the status code differentiates.
+ */
+export class ConflictError extends HttpError {
+  constructor(message: string = 'Conflict') {
+    super(409, 'invalid_request_error', message);
+    this.name = 'ConflictError';
+  }
+}
+
 export class NotImplementedError extends HttpError {
   constructor(message: string = 'Not implemented') {
     super(501, 'api_error', message);

@@ -4,25 +4,81 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-05-18
+
+### Added — Phase 24: identity v2 (magic-link auth + per-module RBAC)
+
+Replaces the single `GATEWAY_ADMIN_KEY` model with a real user table, per-module roles (viewer/operator/admin on redact/scan/compliance), magic-link sign-in, session cookies, and an admin SPA Users page. The legacy `X-Admin-Key` header continues to work as a parallel auth path for bootstrap and operator scripts.
+
+- **Schema** — migration `0005_identity.sql` adds `vs_users` (email partial-unique-where-active, `is_org_admin`, `disabled_at` soft-delete, `last_login_at`), `vs_user_roles` ((user_id, module) PK with CHECK enums), `vs_magic_links` (single-use, 15-min TTL, hash-stored, `requested_ip` for forensics), `vs_user_sessions` (32-byte tokens, hash-stored, sliding 24h idle TTL, `revoked_at` tombstone).
+- **Vault** — `UserStore` (create/find/setRole/disable/listAll + idempotent `setRole` upsert + `countActive()` for bootstrap), `MagicLinkStore` (issue with atomic single-use `DELETE ... RETURNING` consume + `reapExpired` cron), `UserSessionStore` (issue + atomic single-statement `validate-with-slide` via `UPDATE ... RETURNING` + revoke + revokeAllForUser). `roleSatisfies(actual, minimum)` for RBAC ranking.
+- **Gateway** — `apps/gateway/src/auth/mailer.ts` wraps nodemailer with a plaintext-only magic-link email (no HTML, no tracking). `apps/gateway/src/auth/cookie.ts` is a hand-rolled cookie helper (HttpOnly + SameSite=Lax + Path=/ always; Secure when `NODE_ENV=production`). `apps/gateway/src/middleware/session-auth.ts` resolves the `vs_session` cookie and hydrates `req.user` with the per-module role map. `apps/gateway/src/middleware/requires.ts` exports `requires(module, role)` and `requiresOrgAdmin()` middleware factories.
+- **Auth routes** — `POST /api/auth/request-link` (anti-enumeration: 204 + audit row whether the email exists or not), `GET /api/auth/consume?token=…` (validates + sets cookie + 302s to `/`), `POST /api/auth/logout` (revokes server-side + audits unconditionally), `GET /api/auth/me`. When SMTP is unset, `request-link` returns 501 with a clear message; admin-key path continues to work.
+- **Admin endpoints** — `GET/POST /v1/admin/users`, `PUT /v1/admin/users/:id/roles`, `DELETE /v1/admin/users/:id/roles/:module`, `PUT /v1/admin/users/:id/org-admin`, `DELETE /v1/admin/users/:id`. `UserExistsError` maps to 409 `ConflictError`. Inviting a user issues a magic link when SMTP is configured; the response carries `invited: bool`. `adminAuthMiddleware` accepts an `org_admin` session OR the `X-Admin-Key` header.
+- **Bootstrap admin** — when no *active* user exists AND `BOOTSTRAP_ADMIN_EMAIL` is set, the email is created as `is_org_admin=true` with admin role on all three modules + a system-actor `user_created` audit row. Counts only active users so a disabled bootstrap admin gets replaced on restart.
+- **Admin UI** — `LoginGate` rewritten with magic-link request (default) + admin-key paste (fallback). On load the SPA probes `GET /api/auth/me`; success → authenticated UI, 401 → `LoginGate`. New `UsersView` (org_admin only) — invite + per-module role grid + org-admin toggle + disable. Sidebar shows the signed-in email + an `org admin` chip.
+- **Caddy + Vite** — `appliance/caddy.snippet` routes `/api/auth/*` to gateway on the admin domain so cookies set same-origin. Vite dev proxy forwards `/api/auth/*` to `http://127.0.0.1:8080` for local development.
+- **Audit** — six new event types: `user_created`, `user_disabled`, `user_role_changed`, `user_org_admin_changed`, `magic_link_requested`, `magic_link_consumed`. Every user mutation (create / role set / role revoke / org-admin toggle / disable) writes an audit row with from→to deltas. All identity events tagged `module='identity'`.
+
+### Fixed — aggressive review-pass for v1.3
+
+Three parallel review agents (security + audit hygiene + code quality) audited Phases 23.5 / 24 / 25 before release; 12 actionable defects surfaced and fixed. Pattern matches the v1.1.3 aggressive review.
+
+**Critical**
+
+- `MagicLinkStore.consume()` was SELECT-then-DELETE in two round-trips; concurrent consume calls with the same token could both authenticate. Collapsed to a single `DELETE ... RETURNING`.
+- `UserSessionStore.validate()` was SELECT-then-UPDATE; a revoke between the two reads could be lost. Collapsed to `UPDATE ... WHERE (still valid) ... RETURNING`.
+- Bootstrap admin counted all users including disabled ones; if the bootstrap admin got disabled and the appliance restarted, no replacement was created. `UserStore.countActive()` now drives the bootstrap path.
+- Bootstrap admin creation was silent; now writes a system-actor `user_created` audit row.
+- Corrupted `vs_appliance_settings` ciphertext silently fell back to env, masking tampering. Decrypt errors now fail closed with a fatal log; `ApplianceSettingsMissingError` (row absent) stays benign.
+
+**High**
+
+- `UserExistsError` escaped as 500. New `ConflictError` (409) + `POST /v1/admin/users` catches the race-window error.
+- Magic-link `request-link` wrote an audit row only when the user existed (audit-table enumeration channel). Now audits always with `payload.outcome ∈ {sent, no_user}`.
+- Logout was silent when the cookie was already gone. Audits unconditionally with `had_cookie` field.
+
+**Medium**
+
+- Six new `AuditEventType` values replace the workaround use of unrelated types in Phase 24 code.
+- `setOrgAdmin`, `disable`, and `revokeRole` now emit audit rows with from→to deltas.
+- `PromptRegistry` parser hardened against DoS: 1 MB whole-file cap, 10 KB per-frontmatter-value cap, 100-line closing-fence scan cap.
+- OpenAPI spec bumped to `info.version='1.3.0'`; eight new endpoint paths documented.
+- `env.example` and `docker-compose.fragment.yml` expose `VIBE_SHIELD_PROMPTS_DIR` and `VIBE_SHIELD_SPEND_RATE_PER_MINUTE`.
+
+**Workflow**
+
+- `.github/workflows/ci.yml` adds `workflow_dispatch: {}` so CI can be manually triggered (`gh workflow run CI --ref <branch>`) when GitHub's auto-trigger misses a PR.
+
+**Verification**
+
+Full local integration suite green against Postgres 16 + Redis 7: **386/386 tests passing**, zero failures, zero skips. The previously-deferred integration tests (160 schema + 70 gateway) all exercise the v1.3 critical paths — magic-link end-to-end, admin Anthropic-key set/revert, RBAC denial paths, every Phase 24 audit emission. These are the tests that validate the 12 review-pass fixes actually work.
+
+### Added — Phase 25: egress wrapper consolidation deltas
+
+Three small but defensive changes that tighten the egress boundary around the Anthropic API.
+
+- **G2.6 — Versioned prompt template registry.** New `apps/gateway/src/prompts/registry.ts` loads `*.md` templates from `PROMPTS_DIR` at startup, parses minimal YAML frontmatter (`id`, `description`, `model_hint`), and computes SHA-256 of each file's raw bytes. `PromptRegistry.get(id)` returns the parsed template + SHA so a future caller (Phase 28 internal API) can record the SHA in the audit row of every Claude call. Admin UI gets a read-only `Prompts` view listing the loaded templates and their fingerprints. Loader skips invalid templates with a warn-level log; missing directory is a clean no-op (registry stays empty until Phase 28 introduces concrete consumers).
+- **G2.8 — Per-tenant per-minute spend rate cap.** New `apps/gateway/src/quota/spend-rate-limiter.ts`. Fixed 60-second window, Redis-backed (`vs:srl:<tenant>:<window>` keys with 65s TTL). Pre-flight check throws `SpendRateLimitExceededError` once a tenant hits 100%; the orchestrator maps that to 429 + Retry-After. Soft-warn at 80% via the logger and an optional callback hook (audit-friendly). Configurable via `SPEND_RATE_PER_MINUTE_MICRODOLLARS` (default $100/min); set to 0 to disable. Sits alongside the existing month-cap — the month-cap stops *sustained* spend, this stops the *rate*, so a runaway worker can't burn through a month of budget in 10 minutes.
+- **G2.9 — Anthropic egress boundary enforcement.** ESLint `no-restricted-imports` rule blocks `@anthropic-ai/sdk` imports from anywhere under `apps/gateway/src/**` except `apps/gateway/src/anthropic/`. New `apps/gateway/src/anthropic/types.ts` re-exports the SDK types the rest of the gateway needs (`Message`, `MessageCreateParamsNonStreaming`, etc.) so consumers route through the wrapper module instead of touching the package directly. New `scripts/check-anthropic-boundary.sh` is the CI belt-and-braces — runs from `make boundary` (wired into `make verify`); regex-tightened so doc comments referencing the SDK aren't false positives; works with `rg` or falls back to `find` + `grep` so it runs anywhere.
+
+Test additions: 9 unit tests on `PromptRegistry` (valid load, SHA stability across edits, malformed/duplicate handling, README skip, slug validation, missing directory) and 7 on `SpendRateLimiter` (FakeRedis stub; per-tenant isolation, cap-zero short-circuit, soft-warn-once-per-crossing, retry-after surface).
+
 ### Added — Phase 23.5: admin Anthropic-key management
 
-The admin UI can now rotate the Anthropic API key without an appliance redeploy. The env-set `ANTHROPIC_API_KEY` remains the bootstrap fallback for fresh installs; once an operator sets a key via the admin SPA it is persisted encrypted under the appliance KEK and overrides the env value on the next request.
+The admin UI can now rotate the Anthropic API key without an appliance redeploy. The env-set `ANTHROPIC_API_KEY` remains the bootstrap fallback; once an operator sets a key via the admin SPA it is persisted encrypted under the appliance KEK and overrides the env value on the next request.
 
-- **Schema** — new migration `0003_appliance_settings.sql` adds `vs_appliance_settings` (singleton row, AES-256-GCM ciphertext + SHA-256-prefix fingerprint). Migration `0004_audit_module.sql` extends `vs_audit` with `module` / `actor_type` / `service_name` columns per UI-Build-Addendum §4.6; historic rows are backfilled.
-- **Vault** — `packages/schema/src/vault/appliance-secret-store.ts` wraps/unwraps the key with AAD `vs:appliance:anthropic_key` so a per-tenant DEK can't be substituted in. `fingerprintOf(plaintext)` returns the 16-hex display fingerprint.
-- **Gateway** — new `AnthropicClientHolder` (`apps/gateway/src/anthropic/holder.ts`) provides `getClient()` / `getSdk()` / `reload(opts)` so rotation takes effect on the next request. Orchestrator + streaming consume via accessors. The reprobe loop now reads the live key via `getApiKey()` so the next probe targets the new key automatically.
-- **Admin API** — three new endpoints behind `X-Admin-Key`:
-  - `GET /v1/admin/anthropic/key` — masked status (source + fingerprint + set-at + bootstrap-present).
-  - `PUT /v1/admin/anthropic/key` — body `{ key }`; probes Anthropic before persisting; reloads the holder atomically; writes an `anthropic_key_set` audit row carrying the fingerprint only.
-  - `DELETE /v1/admin/anthropic/key` — reverts to env-backed key; 409 if no env fallback is available; writes `anthropic_key_cleared` audit row.
-- **Admin UI** — `AnthropicProbeView` restructured into three panels: current key status (source badge + fingerprint + run-probe-now), set/rotate key (textarea + Validate & save; cleartext cleared on success), revert to env-backed key (danger button, disabled when already env).
-- **Manifest** — `.appliance/manifest.json` unchanged. The env `ANTHROPIC_API_KEY` declaration remains required so fresh appliance installs boot; the admin override is additive.
+- **Schema** — `0003_appliance_settings.sql` adds `vs_appliance_settings` (singleton row, AES-256-GCM ciphertext + SHA-256-prefix fingerprint). `0004_audit_module.sql` extends `vs_audit` with `module` / `actor_type` / `service_name` columns; historic rows backfilled.
+- **Vault** — `ApplianceSecretStore` wraps/unwraps the key with AAD `vs:appliance:anthropic_key` so a per-tenant DEK can't be substituted in.
+- **Gateway** — `AnthropicClientHolder` provides `getClient()` / `getSdk()` / `reload(opts)` so rotation takes effect on the next request. Orchestrator + streaming consume via accessors; reprobe loop reads the live key via `getApiKey()`.
+- **Admin API** — `GET / PUT / DELETE /v1/admin/anthropic/key`. PUT probes Anthropic before persisting; DELETE refuses with 409 when no env fallback. Audit rows carry the fingerprint only, never plaintext.
+- **Admin UI** — `AnthropicProbeView` restructured into three panels: status, set/rotate, revert.
 
 ### Docs
 
-- **`BUILD_PLAN.md`** rewritten to incorporate `UI-Build-Addendum.md`. New §2.5 (product surface / modules), new Phases 23.5–30 covering admin Anthropic-key management, identity v2 + per-module RBAC, egress wrapper deltas, Module 2 (Scan), Module 3 (Compliance), internal service API + MyBooks SDK, licensing tiers, and release packaging. Each new phase carries an `[addendum X]` traceability tag back to the addendum's lettered sections. Shipped phases (1–9, 20, 21) marked as such; partial phases (10–13, 17, 19, 22) reflect what's actually in-tree as of v1.1.5. The addendum's single-FastAPI-container architecture is explicitly rejected; the 3-service split is canonical. Naming history moved to an appendix.
+- **`BUILD_PLAN.md`** rewritten to incorporate `UI-Build-Addendum.md`. New §2.5 (product surface / modules), new Phases 23.5–30 covering identity v2 + per-module RBAC, egress wrapper deltas, Module 2 (Scan), Module 3 (Compliance), internal service API + MyBooks SDK, licensing tiers, release packaging. Phases 23.5 / 24 / 25 marked **shipped, v1.3**. The addendum's single-FastAPI-container architecture is explicitly rejected; the 3-service split is canonical.
 - **`UI-Build-Addendum.md`** marked superseded with a status banner; body retained for traceability.
-- **`appliance/INSTALL.md`** — added a note that the env-set `ANTHROPIC_API_KEY` is the bootstrap; admins can rotate from the SPA after first login.
+- **`appliance/INSTALL.md`** — new SMTP / `BOOTSTRAP_ADMIN_EMAIL` / cookie-flag section for Phase 24; note that env-set `ANTHROPIC_API_KEY` is bootstrap-only and admins rotate via the SPA.
 
 ## [1.1.4] — 2026-05-16
 
@@ -384,3 +440,4 @@ Core end-to-end redaction pipeline live: `POST /v1/messages` accepts an Anthropi
 
 - Stack drift: BUILD_PLAN.md §2.1 specifies Node 20; the active kickoff prompt bumped to Node 24. CLAUDE.md and `package.json` use 24 — reconcile BUILD_PLAN.md when convenient.
 - `docs/compliance-memo.md` is referenced by the kickoff prompt but not yet present in the repo.
+

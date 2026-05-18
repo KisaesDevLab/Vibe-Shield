@@ -67,6 +67,24 @@ Required fields: `ANTHROPIC_API_KEY`, `VS_KEK`, `VIBE_SHIELD_DATABASE_URL`, `VIB
 
 > **`ANTHROPIC_API_KEY` is the bootstrap key.** As of v1.2 the admin SPA can rotate the Anthropic key without a redeploy — the new value is persisted encrypted under `VS_KEK` and overrides this env value on the next request. The env var still needs to be set at first boot so the gateway has something to probe and start with; after that, day-to-day rotations happen at `https://shield.<domain>/` → **Anthropic Probe** → *Set / rotate key*.
 
+#### Magic-link sign-in (Phase 24, v1.3+)
+
+As of v1.3, operators can sign in to the admin SPA with a one-time email link instead of pasting `GATEWAY_ADMIN_KEY`. The admin-key path stays available as a fallback. To enable magic-link sign-in:
+
+| Var | Required? | What |
+|---|---|---|
+| `PUBLIC_URL` | yes (for magic-link) | The public origin where the admin SPA is reachable, e.g. `https://shield.firm.example`. The magic-link URL in the email is built off this. |
+| `SMTP_HOST` | yes (for magic-link) | SMTP relay. When unset, `/api/auth/request-link` returns 501 and operators must use the admin-key fallback. |
+| `SMTP_PORT` | no (default `587`) | 465 for implicit TLS; 587 for STARTTLS. |
+| `SMTP_USER` / `SMTP_PASSWORD` | optional | Skip for un-authenticated local relays. |
+| `SMTP_FROM` | recommended | The `From:` address. Defaults to `vibe-shield@$SMTP_HOST`. |
+| `SMTP_TLS` | no (default `true`) | Set to `false` for relays that don't support STARTTLS (test envs only). |
+| `BOOTSTRAP_ADMIN_EMAIL` | recommended | On first boot, if `vs_users` is empty, this email is created as the first `is_org_admin` user with admin role on every module. Idempotent — skipped if any user already exists. |
+| `SESSION_IDLE_TTL_MINUTES` | no (default `1440`) | Sliding session idle TTL. |
+| `MAGIC_LINK_TTL_MINUTES` | no (default `15`) | One-time link TTL. |
+
+Cookie flags: `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` when `NODE_ENV=production`. The admin SPA + the gateway must be same-origin for the cookie to flow — the `caddy.snippet` in this directory routes both `/v1/admin/*` and `/api/auth/*` to the gateway under `shield.<domain>` for exactly that reason.
+
 Optional: `VIBE_SHIELD_ADMIN_BASE_PATH` (defaults to `/`). Set this to e.g. `/shield/` when you front the admin container with a reverse proxy that mounts the UI under a path prefix and strips that prefix before hitting nginx. The value MUST end with a slash. The admin nginx entrypoint shim (`/docker-entrypoint.d/40-base-path.sh`) reads this and sed-substitutes the SPA bundle's `/__VIBE_BASE_PATH__/` sentinel at container start.
 
 ### 4. Wire up Caddy

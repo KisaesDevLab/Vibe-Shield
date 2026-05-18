@@ -34,7 +34,7 @@ services:
   # Internal-only. No external port. Reachable on the internal Docker
   # network as `vibe-shield-engine:8000`.
   vibe-shield-engine:
-    image: ghcr.io/kisaesdevlab/vibe-shield-engine:${VIBE_SHIELD_VERSION:-v1.1.5}
+    image: ghcr.io/kisaesdevlab/vibe-shield-engine:${VIBE_SHIELD_VERSION:-v1.3.0}
     container_name: vibe-shield-engine
     restart: unless-stopped
     environment:
@@ -65,7 +65,7 @@ services:
   # before starting the server. Set to "false" if you prefer to run
   # migrations as a separate one-shot job for blue-green control.
   vibe-shield-gateway:
-    image: ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.1.5}
+    image: ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.3.0}
     container_name: vibe-shield-gateway
     restart: unless-stopped
     environment:
@@ -87,6 +87,21 @@ services:
       MAX_REQUEST_BYTES: ${VIBE_SHIELD_MAX_REQUEST_BYTES:-1048576}
       SESSION_TTL_MINUTES: ${VIBE_SHIELD_SESSION_TTL_MINUTES:-60}
       LOG_LEVEL: ${VIBE_SHIELD_LOG_LEVEL:-info}
+      # Phase 25 G2.8 / G2.6
+      SPEND_RATE_PER_MINUTE_MICRODOLLARS: ${VIBE_SHIELD_SPEND_RATE_PER_MINUTE:-100000000}
+      PROMPTS_DIR: ${VIBE_SHIELD_PROMPTS_DIR:-}
+      # Phase 24 — magic-link sign-in (v1.3+). All optional; unset
+      # SMTP_HOST disables magic-link and forces X-Admin-Key auth.
+      PUBLIC_URL: ${VIBE_SHIELD_PUBLIC_URL:-}
+      SMTP_HOST: ${VIBE_SHIELD_SMTP_HOST:-}
+      SMTP_PORT: ${VIBE_SHIELD_SMTP_PORT:-587}
+      SMTP_USER: ${VIBE_SHIELD_SMTP_USER:-}
+      SMTP_PASSWORD: ${VIBE_SHIELD_SMTP_PASSWORD:-}
+      SMTP_FROM: ${VIBE_SHIELD_SMTP_FROM:-}
+      SMTP_TLS: ${VIBE_SHIELD_SMTP_TLS:-true}
+      BOOTSTRAP_ADMIN_EMAIL: ${VIBE_SHIELD_BOOTSTRAP_ADMIN_EMAIL:-}
+      SESSION_IDLE_TTL_MINUTES: ${VIBE_SHIELD_SESSION_IDLE_TTL_MINUTES:-1440}
+      MAGIC_LINK_TTL_MINUTES: ${VIBE_SHIELD_MAGIC_LINK_TTL_MINUTES:-15}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -112,7 +127,7 @@ services:
   # nginx. Vibe-Appliance operators ignore this — the appliance's per-app
   # env file supplies the right value automatically.
   vibe-shield-admin:
-    image: ghcr.io/kisaesdevlab/vibe-shield-admin:${VIBE_SHIELD_VERSION:-v1.1.5}
+    image: ghcr.io/kisaesdevlab/vibe-shield-admin:${VIBE_SHIELD_VERSION:-v1.3.0}
     container_name: vibe-shield-admin
     restart: unless-stopped
     environment:
