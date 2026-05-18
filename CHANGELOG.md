@@ -4,6 +4,26 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — Phase 23.5: admin Anthropic-key management
+
+The admin UI can now rotate the Anthropic API key without an appliance redeploy. The env-set `ANTHROPIC_API_KEY` remains the bootstrap fallback for fresh installs; once an operator sets a key via the admin SPA it is persisted encrypted under the appliance KEK and overrides the env value on the next request.
+
+- **Schema** — new migration `0003_appliance_settings.sql` adds `vs_appliance_settings` (singleton row, AES-256-GCM ciphertext + SHA-256-prefix fingerprint). Migration `0004_audit_module.sql` extends `vs_audit` with `module` / `actor_type` / `service_name` columns per UI-Build-Addendum §4.6; historic rows are backfilled.
+- **Vault** — `packages/schema/src/vault/appliance-secret-store.ts` wraps/unwraps the key with AAD `vs:appliance:anthropic_key` so a per-tenant DEK can't be substituted in. `fingerprintOf(plaintext)` returns the 16-hex display fingerprint.
+- **Gateway** — new `AnthropicClientHolder` (`apps/gateway/src/anthropic/holder.ts`) provides `getClient()` / `getSdk()` / `reload(opts)` so rotation takes effect on the next request. Orchestrator + streaming consume via accessors. The reprobe loop now reads the live key via `getApiKey()` so the next probe targets the new key automatically.
+- **Admin API** — three new endpoints behind `X-Admin-Key`:
+  - `GET /v1/admin/anthropic/key` — masked status (source + fingerprint + set-at + bootstrap-present).
+  - `PUT /v1/admin/anthropic/key` — body `{ key }`; probes Anthropic before persisting; reloads the holder atomically; writes an `anthropic_key_set` audit row carrying the fingerprint only.
+  - `DELETE /v1/admin/anthropic/key` — reverts to env-backed key; 409 if no env fallback is available; writes `anthropic_key_cleared` audit row.
+- **Admin UI** — `AnthropicProbeView` restructured into three panels: current key status (source badge + fingerprint + run-probe-now), set/rotate key (textarea + Validate & save; cleartext cleared on success), revert to env-backed key (danger button, disabled when already env).
+- **Manifest** — `.appliance/manifest.json` unchanged. The env `ANTHROPIC_API_KEY` declaration remains required so fresh appliance installs boot; the admin override is additive.
+
+### Docs
+
+- **`BUILD_PLAN.md`** rewritten to incorporate `UI-Build-Addendum.md`. New §2.5 (product surface / modules), new Phases 23.5–30 covering admin Anthropic-key management, identity v2 + per-module RBAC, egress wrapper deltas, Module 2 (Scan), Module 3 (Compliance), internal service API + MyBooks SDK, licensing tiers, and release packaging. Each new phase carries an `[addendum X]` traceability tag back to the addendum's lettered sections. Shipped phases (1–9, 20, 21) marked as such; partial phases (10–13, 17, 19, 22) reflect what's actually in-tree as of v1.1.5. The addendum's single-FastAPI-container architecture is explicitly rejected; the 3-service split is canonical. Naming history moved to an appendix.
+- **`UI-Build-Addendum.md`** marked superseded with a status banner; body retained for traceability.
+- **`appliance/INSTALL.md`** — added a note that the env-set `ANTHROPIC_API_KEY` is the bootstrap; admins can rotate from the SPA after first login.
+
 ## [1.1.4] — 2026-05-16
 
 ### Added — appliance integration kit (Phase 21 §A: Shield-side surfaces)
