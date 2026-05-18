@@ -4,6 +4,35 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-05-18
+
+### Added — Phase 17 v1.4: user-facing Redact UI
+
+A standalone, end-user-facing document-redaction surface on the appliance. Operators with a `redact` role drop an image, get back a redacted PDF + extracted markdown + token map. No external dependency on a calling Vibe app — Shield itself is now usable as the firm's primary redaction tool.
+
+- **Schema** — migration `0006_redact_jobs.sql` adds `vs_redact_jobs` (UUID id, `user_id` FK, filename, mime, size, page count, status enum `pending|running|completed|failed`, error, timestamps, 30-day default `expires_at`). Indexes on `(user_id, created_at)` for the history view and a partial index on active statuses.
+- **Vault** — `RedactJobStore` (create / find / list-for-user / list-all / markRunning / markCompleted / markFailed / reapStaleRunning for crash recovery / findExpired for the artifact-purge cron / delete).
+- **Storage** — `apps/gateway/src/redact/storage.ts` owns the on-disk layout: `<REDACT_JOBS_DIR>/<job_id>/source.<ext>`, `pages/`, `redacted.pdf`, `extracted.md`, `extracted.json`, `audit.jsonl`. UUID gate + path-traversal check on every operation. Default base dir `/var/lib/vibe-shield/redact/jobs` (env-configurable). The appliance compose fragment mounts a named volume there for persistence across container recreates.
+- **Pipeline** — `RedactPipeline` runs synchronously end-to-end: persist source → call engine `/redact-image` → write per-page raster + redacted PDF (PNG wrapped via `pdf-lib`) + extracted MD + JSON + audit JSONL → mark complete. Failures are captured into the row + audit log; the route always returns 201 with the current job state so the UI can render a `failed` pill without separate error handling.
+- **Engine client** — new `EngineClient.redactImage(bytes)` method, base64-encodes the source for the existing `/redact-image` endpoint, gets back masked PNG + per-region bbox metadata + token map. 120s timeout (vs the 30s default) since OCR + face detection is heavier than text redaction.
+- **Gateway endpoints** — all behind `requires('redact', <role>)` plus session-cookie or admin-key auth:
+  - `POST /v1/redact/jobs` — multipart upload (`file` field). 25 MB cap by default. Operator role minimum.
+  - `GET /v1/redact/jobs?limit=` — list (own jobs for non-admins; everyone's for org_admin / redact admin).
+  - `GET /v1/redact/jobs/:id` — single job.
+  - `GET /v1/redact/jobs/:id/artifacts/:kind` — download `source` | `redacted` | `extracted_md` | `extracted_json` with proper `Content-Type` + `Content-Disposition`.
+  - `DELETE /v1/redact/jobs/:id` — purges the on-disk directory + the DB row. Operator role minimum.
+- **Admin SPA** — new `RedactView` with drag-and-drop upload, status pill (pending / running / completed / failed), per-job detail panel with download buttons for each artifact, and a history table sorted newest-first. Sidebar entry visible to any user with a `redact` role (or `is_org_admin`). Default view on sign-in is now `redact` instead of `keys`.
+- **Crash recovery** — gateway entry point calls `RedactJobStore.reapStaleRunning()` on boot, marking any job left in `running` state for >10 min as `failed` with a clear message. Users can re-upload.
+- **Supported MIMEs (v1.4)** — PNG, JPEG, WebP, TIFF, BMP. PDF support lands in v1.5 with engine Dockerfile changes (poppler-utils + pdf2image).
+
+**Verification**: 389 tests pass (5 client + 8 admin + 213 schema + 163 gateway including 8 new redact integration tests covering: no-session 401, no-role 403, upload-persist-download happy path, unsupported MIME rejection, viewer-only role denial, org_admin cross-user visibility, delete-purges-disk-and-DB, engine-failure-captured-into-row).
+
+### Operator notes
+
+- Set `VIBE_SHIELD_REDACT_MAX_UPLOAD_BYTES` if you want larger uploads than 25 MB.
+- The persistent volume `vibe-shield-redact` survives container recreates. Backup it alongside Postgres.
+- Per-job artifacts auto-expire 30 days after creation; the purge cron is a v1.5 follow-up (manual cleanup: `DELETE FROM vs_redact_jobs WHERE expires_at < now() AND status = 'completed';` + `rm -rf <REDACT_JOBS_DIR>/<id>` for each row).
+
 ## [1.3.0] — 2026-05-18
 
 ### Added — Phase 24: identity v2 (magic-link auth + per-module RBAC)

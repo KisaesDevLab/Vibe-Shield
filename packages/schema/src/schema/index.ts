@@ -12,3 +12,4 @@ export * from './users.js';
 export * from './user-roles.js';
 export * from './magic-links.js';
 export * from './user-sessions.js';
+export * from './redact-jobs.js';

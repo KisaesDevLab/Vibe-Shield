@@ -267,9 +267,9 @@ Integration plan documented at `compliance/integrations/mybooks.md` (commit 3175
 
 Plan at `compliance/integrations/tb.md`. Tax-code crosswalk + JE narrative routing through gateway. Open.
 
-### Phase 17 — Image redaction pipeline **[partial]**
+### Phase 17 — Image redaction pipeline **[shipped, v1.4]**
 
-`POST /v1/images/redact` shipped on the gateway (`apps/gateway/src/proxy/`), engine pipeline in `apps/engine/app/image/`. OCR (GLM-OCR primary, Tesseract fallback), face detection (MediaPipe), signature heuristic, barcode/QR detection. Open: image QA corpus, P95 < 3s on NucBox M6 acceptance test, admin drag-and-drop UI.
+End-to-end user-facing UI shipped: drag-and-drop image upload, status tracking, per-artifact downloads, history view. Backing pipeline: gateway multipart upload route → engine `/redact-image` (OCR + face + signature + barcode masking) → pdf-lib PDF wrap → per-job artifact directory on the appliance volume. `vs_redact_jobs` table + `RedactJobStore` + crash recovery via `reapStaleRunning()`. RBAC via `requires('redact', <role>)`. Open: PDF input (v1.5), image QA corpus + recall gates, P95 latency budget on NucBox M6.
 
 ### Phase 18 — Vibe Tax Research Chat & GLM-OCR integration
 

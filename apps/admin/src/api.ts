@@ -149,6 +149,53 @@ export class AdminClient {
     return this.request('/v1/admin/prompts');
   }
 
+  // ----- Redact module (Phase 17 v1.4) ---------------------------
+
+  async uploadRedact(file: File): Promise<RedactJobRow> {
+    const fd = new FormData();
+    fd.append('file', file);
+    const headers: Record<string, string> = {};
+    if (this.adminKey !== undefined) {
+      headers['X-Admin-Key'] = this.adminKey;
+    }
+    const res = await fetch(`${BASE}/v1/redact/jobs`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers,
+      body: fd,
+    });
+    if (!res.ok) {
+      let message = `upload returned ${String(res.status)}`;
+      try {
+        const body = (await res.json()) as { error?: { message?: string } };
+        if (body.error?.message !== undefined) message = body.error.message;
+      } catch {
+        // ignore body parse failures
+      }
+      throw new AdminApiError(message, res.status, '/v1/redact/jobs');
+    }
+    return (await res.json()) as RedactJobRow;
+  }
+
+  listRedactJobs(limit = 50): Promise<RedactJobRow[]> {
+    return this.request(`/v1/redact/jobs?limit=${String(limit)}`);
+  }
+
+  getRedactJob(id: string): Promise<RedactJobRow> {
+    return this.request(`/v1/redact/jobs/${id}`);
+  }
+
+  redactArtifactUrl(
+    jobId: string,
+    kind: 'source' | 'redacted' | 'extracted_md' | 'extracted_json',
+  ): string {
+    return `${BASE}/v1/redact/jobs/${jobId}/artifacts/${kind}`;
+  }
+
+  deleteRedactJob(id: string): Promise<void> {
+    return this.request(`/v1/redact/jobs/${id}`, { method: 'DELETE' });
+  }
+
   // ----- API Keys -------------------------------------------------
 
   listApiKeys(): Promise<ApiKeyRow[]> {
@@ -318,4 +365,20 @@ export interface PromptRow {
   sha: string;
   description: string | null;
   model_hint: string | null;
+}
+
+/** Phase 17 v1.4 — user-initiated document redaction job. */
+export interface RedactJobRow {
+  id: string;
+  user_id: string;
+  filename: string;
+  mime: string;
+  source_size_bytes: number;
+  pages_count: number | null;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  expires_at: string;
 }
