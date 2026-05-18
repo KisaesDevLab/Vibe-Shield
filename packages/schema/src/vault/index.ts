@@ -41,3 +41,13 @@ export type {
   AdminMissView,
   RecognizerMissInput,
 } from './recognizer-miss-store.js';
+
+export {
+  ApplianceSecretStore,
+  ApplianceSettingsMissingError,
+  fingerprintOf,
+} from './appliance-secret-store.js';
+export type {
+  AnthropicKeyRecord,
+  AnthropicKeyStatus,
+} from './appliance-secret-store.js';

@@ -65,6 +65,8 @@ $EDITOR /opt/vibe/appliance/.env
 
 Required fields: `ANTHROPIC_API_KEY`, `VS_KEK`, `VIBE_SHIELD_DATABASE_URL`, `VIBE_SHIELD_REDIS_URL`, `VIBE_SHIELD_ADMIN_KEY`.
 
+> **`ANTHROPIC_API_KEY` is the bootstrap key.** As of v1.2 the admin SPA can rotate the Anthropic key without a redeploy — the new value is persisted encrypted under `VS_KEK` and overrides this env value on the next request. The env var still needs to be set at first boot so the gateway has something to probe and start with; after that, day-to-day rotations happen at `https://shield.<domain>/` → **Anthropic Probe** → *Set / rotate key*.
+
 Optional: `VIBE_SHIELD_ADMIN_BASE_PATH` (defaults to `/`). Set this to e.g. `/shield/` when you front the admin container with a reverse proxy that mounts the UI under a path prefix and strips that prefix before hitting nginx. The value MUST end with a slash. The admin nginx entrypoint shim (`/docker-entrypoint.d/40-base-path.sh`) reads this and sed-substitutes the SPA bundle's `/__VIBE_BASE_PATH__/` sentinel at container start.
 
 ### 4. Wire up Caddy

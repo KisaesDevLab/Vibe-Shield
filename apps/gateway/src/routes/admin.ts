@@ -23,13 +23,26 @@ import { timingSafeEqual } from 'node:crypto';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
 
-import type {
-  ApiKeyStore,
-  AuditLogger,
-  RecognizerMissStore,
+import {
+  fingerprintOf,
+  type ApiKeyStore,
+  type ApplianceSecretStore,
+  type AuditLogger,
+  type RecognizerMissStore,
 } from '@kisaesdevlab/vibe-shield-schema';
+import type { AnthropicClientHolder } from '../anthropic/holder.js';
+import {
+  AnthropicUnreachableError,
+  ConsumerKeyError,
+  probeAnthropicKey,
+} from '../anthropic/probe.js';
 import type { AnthropicKeyReprobe } from '../anthropic/reprobe.js';
-import { AuthenticationError, InvalidRequestError, NotFoundError } from '../errors.js';
+import {
+  AuthenticationError,
+  EngineUnavailableError,
+  InvalidRequestError,
+  NotFoundError,
+} from '../errors.js';
 import type { PolicyResolver } from '../policy/resolver.js';
 
 export interface AdminDeps {
@@ -44,12 +57,24 @@ export interface AdminDeps {
   recognizerMisses?: RecognizerMissStore;
   policies?: PolicyResolver;
   reprobe?: AnthropicKeyReprobe;
+  /** Phase 23.5: holder of the live Anthropic client; admin can rotate. */
+  anthropicHolder?: AnthropicClientHolder;
+  /** Phase 23.5: appliance secret vault for the rotated key. */
+  applianceSecrets?: ApplianceSecretStore;
+  /** Phase 23.5: env-set bootstrap key for revert-to-env. */
+  bootstrapApiKey?: string;
+  /** Phase 23.5: probe override for tests. */
+  probeFn?: typeof probeAnthropicKey;
 }
 
 const issueBody = z.object({
   tenantId: z.string().min(1),
   appId: z.string().min(1).optional().default('default'),
   label: z.string().min(1),
+});
+
+const anthropicKeyBody = z.object({
+  key: z.string().min(1, 'key is required'),
 });
 
 export function adminRouter(deps: AdminDeps): Router {
@@ -183,6 +208,141 @@ export function adminRouter(deps: AdminDeps): Router {
         }
         const result = await deps.reprobe.runOnce();
         res.json(result);
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  // ---- Anthropic key management (Phase 23.5) -------------------
+  //
+  // Source-of-truth flow:
+  //   1. Operator pastes a new commercial key in the SPA → PUT.
+  //   2. Gateway probes Anthropic with the candidate key. Bad key →
+  //      400; nothing is persisted.
+  //   3. Good key → encrypted with the appliance KEK and persisted in
+  //      vs_appliance_settings (singleton); the holder is reloaded
+  //      atomically so the next /v1/messages uses the new key.
+  //   4. Audit row written with fingerprint only — never the plaintext.
+  //
+  // GET returns source + fingerprint + last-set-at; never plaintext.
+  // DELETE reverts to the env-set bootstrap key; refuses if env is also
+  // unset (otherwise rotation would leave the gateway with no key).
+
+  router.get('/v1/admin/anthropic/key', (req, res, next) => {
+    void (async () => {
+      try {
+        const meta = deps.anthropicHolder?.getMeta() ?? {
+          source: 'env' as const,
+          setAt: null,
+          fingerprint: null,
+        };
+        const bootstrapPresent = deps.bootstrapApiKey !== undefined;
+        res.json({
+          source: meta.source,
+          fingerprint: meta.fingerprint,
+          set_at: meta.setAt?.toISOString() ?? null,
+          bootstrap_present: bootstrapPresent,
+        });
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.put('/v1/admin/anthropic/key', (req, res, next) => {
+    void (async () => {
+      try {
+        if (deps.anthropicHolder === undefined || deps.applianceSecrets === undefined) {
+          throw new InvalidRequestError('Anthropic-key management not configured');
+        }
+        const parsed = anthropicKeyBody.safeParse(req.body);
+        if (!parsed.success) {
+          throw new InvalidRequestError(parsed.error.issues.map((i) => i.message).join('; '));
+        }
+        const candidate = parsed.data.key.trim();
+        const probe = deps.probeFn ?? probeAnthropicKey;
+        // Probe BEFORE persist. Bad keys must not reach the DB.
+        try {
+          await probe({ apiKey: candidate });
+        } catch (err) {
+          if (err instanceof ConsumerKeyError) {
+            throw new InvalidRequestError(
+              'Anthropic rejected the key. Only commercial API keys are accepted.',
+            );
+          }
+          if (err instanceof AnthropicUnreachableError) {
+            throw new EngineUnavailableError('Anthropic unreachable during probe');
+          }
+          throw err;
+        }
+        const { fingerprint } = await deps.applianceSecrets.setAnthropicKey(
+          candidate,
+          'admin',
+        );
+        deps.anthropicHolder.reload({
+          apiKey: candidate,
+          meta: { source: 'db', setAt: new Date(), fingerprint },
+        });
+        if (deps.audit !== undefined) {
+          await deps.audit
+            .append({
+              tenantId: 'appliance',
+              eventType: 'anthropic_key_set',
+              module: 'admin',
+              payload: { fingerprint },
+            })
+            .catch(() => undefined);
+        }
+        res.json({ source: 'db', fingerprint, set_at: new Date().toISOString() });
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.delete('/v1/admin/anthropic/key', (req, res, next) => {
+    void (async () => {
+      try {
+        if (deps.anthropicHolder === undefined || deps.applianceSecrets === undefined) {
+          throw new InvalidRequestError('Anthropic-key management not configured');
+        }
+        if (deps.bootstrapApiKey === undefined || deps.bootstrapApiKey === '') {
+          // Refuse: clearing the DB key would leave the gateway with
+          // no Anthropic credentials at all. Operator must set
+          // ANTHROPIC_API_KEY in env first.
+          res
+            .status(409)
+            .json({
+              error: {
+                type: 'invalid_request_error',
+                message:
+                  'No env-set ANTHROPIC_API_KEY to fall back to; refusing to clear the admin-set key.',
+              },
+            });
+          return;
+        }
+        const previousFingerprint = deps.anthropicHolder.getMeta().fingerprint;
+        await deps.applianceSecrets.clearAnthropicKey('admin');
+        deps.anthropicHolder.reload({
+          apiKey: deps.bootstrapApiKey,
+          meta: {
+            source: 'env',
+            setAt: null,
+            fingerprint: fingerprintOf(deps.bootstrapApiKey),
+          },
+        });
+        if (deps.audit !== undefined) {
+          await deps.audit
+            .append({
+              tenantId: 'appliance',
+              eventType: 'anthropic_key_cleared',
+              module: 'admin',
+              payload: { previous_fingerprint: previousFingerprint },
+            })
+            .catch(() => undefined);
+        }
+        res.status(204).end();
       } catch (err) {
         next(err);
       }

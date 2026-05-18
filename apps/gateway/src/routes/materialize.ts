@@ -121,6 +121,7 @@ export function materializeRouter(deps: MaterializeDeps): Router {
             tenantId: req.auth.tenantId,
             sessionId: id,
             eventType: 'materialize',
+            module: 'egress',
             payload: {
               app_id: req.auth.appId,
               output_filename: parsed.data.output_filename ?? null,

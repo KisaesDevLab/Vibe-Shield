@@ -32,12 +32,41 @@ export type AuditEventType =
   | 'api_key_revoke'
   | 'spend_cap_breached'
   | 'rate_limit_breached'
-  | 'commercial_key_probe';
+  | 'commercial_key_probe'
+  | 'anthropic_key_set'
+  | 'anthropic_key_cleared';
+
+/**
+ * Product module the event belongs to (Phase 23.5 / UI-Build-Addendum §4.6).
+ *
+ *   - ``redact``     — Module 1 redact pipeline events
+ *   - ``scan``       — Module 2 scan job events (Phase 26)
+ *   - ``compliance`` — Module 3 vendor/WISP/evidence-pack events (Phase 27)
+ *   - ``identity``   — session lifecycle, users, magic links (Phase 24)
+ *   - ``egress``     — Anthropic-direction events (request, reidentify, materialize, probe)
+ *   - ``admin``      — admin-key gated mutations (api keys, policies, anthropic-key set/clear)
+ */
+export type AuditModule =
+  | 'redact'
+  | 'scan'
+  | 'compliance'
+  | 'identity'
+  | 'egress'
+  | 'admin';
+
+export type AuditActorType = 'user' | 'service' | 'system';
 
 export interface AuditEntry {
   tenantId: string;
   sessionId?: string;
   eventType: AuditEventType;
+  /** Product module — required for new inserts (UI-Build-Addendum §4.6). */
+  module: AuditModule;
+  /** Defaults to ``'user'`` when omitted. */
+  actorType?: AuditActorType;
+  /** When ``actorType='service'``, the short name from the service-key
+   *  registry (e.g. ``mybooks``). Ignored otherwise. */
+  serviceName?: string;
   /** Whatever the application would have logged as the body — we hash it. */
   payload: unknown;
 }
@@ -58,6 +87,9 @@ export class AuditLogger {
       tenantId: entry.tenantId,
       ...(entry.sessionId !== undefined ? { sessionId: entry.sessionId } : {}),
       eventType: entry.eventType,
+      module: entry.module,
+      actorType: entry.actorType ?? 'user',
+      ...(entry.serviceName !== undefined ? { serviceName: entry.serviceName } : {}),
       payloadHash,
     });
   }

@@ -57,7 +57,13 @@ import { withRetry } from './retry.js';
 
 export interface OrchestratorDeps {
   engine: EngineClient;
-  anthropic: AnthropicMessagesClient;
+  /**
+   * Live accessor for the current Anthropic client. Phase 23.5 added
+   * runtime key rotation via the admin UI; the orchestrator calls this
+   * per-request so a rotation takes effect on the very next /v1/messages.
+   * Tests pass ``() => stubAnthropic`` here.
+   */
+  getAnthropic: () => AnthropicMessagesClient;
   vault: TokenVault;
   sessions: SessionManager;
   apiKeys: ApiKeyStore;
@@ -127,7 +133,7 @@ export class ProxyOrchestrator {
     const anthropicStart = process.hrtime.bigint();
     try {
       anthropicResponse = await withRetry(() =>
-        this.deps.anthropic.messages.create(anthropicParams),
+        this.deps.getAnthropic().messages.create(anthropicParams),
       );
       anthropicLatency.observe(
         Number(process.hrtime.bigint() - anthropicStart) / 1e9,
@@ -195,6 +201,7 @@ export class ProxyOrchestrator {
           tenantId: auth.tenantId,
           sessionId,
           eventType: 'request',
+          module: 'egress',
           payload: {
             app_id: auth.appId,
             model: anthropicParams.model,
@@ -209,6 +216,7 @@ export class ProxyOrchestrator {
             tenantId: auth.tenantId,
             sessionId,
             eventType: 'reidentify',
+            module: 'egress',
             payload: { mode: policy.reid.mode, model: anthropicParams.model },
           });
         }
@@ -241,6 +249,7 @@ export class ProxyOrchestrator {
               .append({
                 tenantId: auth.tenantId,
                 eventType: 'rate_limit_breached',
+                module: 'egress',
                 payload: {
                   app_id: auth.appId,
                   limit: err.limit,
@@ -272,6 +281,7 @@ export class ProxyOrchestrator {
               .append({
                 tenantId: auth.tenantId,
                 eventType: 'spend_cap_breached',
+                module: 'egress',
                 payload: { app_id: auth.appId },
               })
               .catch(() => undefined);

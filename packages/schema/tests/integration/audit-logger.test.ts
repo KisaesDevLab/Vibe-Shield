@@ -19,6 +19,7 @@ describe.skipIf(!integrationEnabled)('AuditLogger (integration)', () => {
     await logger.append({
       tenantId: 'audit-t1',
       eventType: 'request',
+      module: 'egress',
       payload: { model: 'claude-sonnet-4-6', input_tokens: 100, output_tokens: 50 },
     });
     const count = await logger.countForTenant('audit-t1');
@@ -29,11 +30,13 @@ describe.skipIf(!integrationEnabled)('AuditLogger (integration)', () => {
     await logger.append({
       tenantId: 'audit-t2',
       eventType: 'request',
+      module: 'egress',
       payload: { x: 1 },
     });
     await logger.append({
       tenantId: 'audit-t2',
       eventType: 'reidentify',
+      module: 'egress',
       payload: { x: 2 },
     });
     expect(await logger.countForTenant('audit-t2', 'request')).toBe(1);
@@ -45,11 +48,13 @@ describe.skipIf(!integrationEnabled)('AuditLogger (integration)', () => {
     await logger.append({
       tenantId: 'digest-t',
       eventType: 'request',
+      module: 'egress',
       payload: { i: 1 },
     });
     await logger.append({
       tenantId: 'digest-t',
       eventType: 'reidentify',
+      module: 'egress',
       payload: { i: 2 },
     });
     const today = new Date();
@@ -65,6 +70,7 @@ describe.skipIf(!integrationEnabled)('AuditLogger (integration)', () => {
     await logger.append({
       tenantId: 'digest-evolve',
       eventType: 'materialize',
+      module: 'egress',
       payload: { sha: 'abc' },
     });
     const after = await logger.computeDailyDigest(today);
@@ -76,6 +82,7 @@ describe.skipIf(!integrationEnabled)('AuditLogger (integration)', () => {
     await logger.append({
       tenantId: 'payload-test',
       eventType: 'recognizer_miss',
+      module: 'redact',
       payload: { input: cleartext },
     });
     const rows = await handle.client<{ payload_hash: Buffer }[]>`

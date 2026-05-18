@@ -104,6 +104,31 @@ export class AdminClient {
     return this.request('/v1/admin/anthropic/probe', { method: 'POST' });
   }
 
+  // ----- Anthropic key (Phase 23.5) -------------------------------
+
+  getAnthropicKeyStatus(): Promise<AnthropicKeyStatus> {
+    return this.request('/v1/admin/anthropic/key');
+  }
+
+  /**
+   * Set or rotate the Anthropic key. The plaintext is sent once over
+   * the admin TLS channel; the gateway probes it, persists it
+   * encrypted under the appliance KEK on success, and atomically
+   * reloads the in-memory client. The plaintext is never returned in
+   * any subsequent call.
+   */
+  setAnthropicKey(key: string): Promise<AnthropicKeyStatus> {
+    return this.request('/v1/admin/anthropic/key', {
+      method: 'PUT',
+      body: { key },
+    });
+  }
+
+  /** Revert to the env-backed bootstrap key. */
+  clearAnthropicKey(): Promise<void> {
+    return this.request('/v1/admin/anthropic/key', { method: 'DELETE' });
+  }
+
   // ----- Policies ------------------------------------------------
 
   listPolicies(): Promise<PolicySummary[]> {
@@ -149,6 +174,19 @@ export interface AnthropicProbeResult {
   ok: boolean;
   reason?: string;
   models_visible?: number;
+}
+
+/** Phase 23.5 status payload from GET /v1/admin/anthropic/key. */
+export interface AnthropicKeyStatus {
+  /** ``'env'`` = boot ANTHROPIC_API_KEY; ``'db'`` = operator set in admin UI. */
+  source: 'env' | 'db';
+  /** SHA-256(plaintext) prefix (16 hex chars). null when no key is set anywhere. */
+  fingerprint: string | null;
+  /** ISO timestamp; null when source==='env'. */
+  set_at: string | null;
+  /** Whether ANTHROPIC_API_KEY is set in env. Determines whether
+   *  ``Revert to env-backed key`` is available. */
+  bootstrap_present?: boolean;
 }
 
 export interface PolicySummary {
