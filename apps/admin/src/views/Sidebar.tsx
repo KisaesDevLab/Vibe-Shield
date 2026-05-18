@@ -21,6 +21,7 @@ const items: Item[] = [
   { id: 'misses', label: 'Recognizer Misses' },
   { id: 'probe', label: 'Anthropic Probe' },
   { id: 'policies', label: 'Policies' },
+  { id: 'prompts', label: 'Prompt Templates' },
   { id: 'users', label: 'Users', visible: (me) => me.is_org_admin },
 ];
 

@@ -7,7 +7,6 @@
  * limit + monthly spend cap.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
 import { Router } from 'express';
 import type {
   ApiKeyStore,
@@ -17,6 +16,7 @@ import type {
   TokenVault,
 } from '@kisaesdevlab/vibe-shield-schema';
 import type { AnthropicMessagesClient } from '../anthropic/client.js';
+import type { Anthropic } from '../anthropic/types.js';
 import type { EngineClient } from '../engine/client.js';
 import { AuthenticationError, NotImplementedError } from '../errors.js';
 import { getCorrelationId } from '../middleware/correlation-storage.js';
@@ -26,6 +26,7 @@ import { ProxyOrchestrator } from '../proxy/orchestrator.js';
 import { streamProxy } from '../proxy/streaming.js';
 import type { RateLimiter } from '../quota/rate-limiter.js';
 import type { SpendTracker } from '../quota/spend-cap.js';
+import type { SpendRateLimiter } from '../quota/spend-rate-limiter.js';
 
 export interface MessagesDeps {
   engine: EngineClient;
@@ -40,6 +41,7 @@ export interface MessagesDeps {
   defaultSessionTtlMinutes: number;
   rateLimiter?: RateLimiter;
   spendTracker?: SpendTracker;
+  spendRateLimiter?: SpendRateLimiter;
   policies?: PolicyResolver;
   zdrEnabled?: boolean;
   audit?: AuditLogger;
@@ -57,6 +59,7 @@ export function messagesRouter(deps: MessagesDeps): Router {
     defaultSessionTtlMinutes: deps.defaultSessionTtlMinutes,
     ...(deps.rateLimiter !== undefined ? { rateLimiter: deps.rateLimiter } : {}),
     ...(deps.spendTracker !== undefined ? { spendTracker: deps.spendTracker } : {}),
+    ...(deps.spendRateLimiter !== undefined ? { spendRateLimiter: deps.spendRateLimiter } : {}),
     ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
     ...(deps.zdrEnabled !== undefined ? { zdrEnabled: deps.zdrEnabled } : {}),
     ...(deps.audit !== undefined ? { audit: deps.audit } : {}),

@@ -4,6 +4,16 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — Phase 25: egress wrapper consolidation deltas
+
+Three small but defensive changes that tighten the egress boundary around the Anthropic API.
+
+- **G2.6 — Versioned prompt template registry.** New `apps/gateway/src/prompts/registry.ts` loads `*.md` templates from `PROMPTS_DIR` at startup, parses minimal YAML frontmatter (`id`, `description`, `model_hint`), and computes SHA-256 of each file's raw bytes. `PromptRegistry.get(id)` returns the parsed template + SHA so a future caller (Phase 28 internal API) can record the SHA in the audit row of every Claude call. Admin UI gets a read-only `Prompts` view listing the loaded templates and their fingerprints. Loader skips invalid templates with a warn-level log; missing directory is a clean no-op (registry stays empty until Phase 28 introduces concrete consumers).
+- **G2.8 — Per-tenant per-minute spend rate cap.** New `apps/gateway/src/quota/spend-rate-limiter.ts`. Fixed 60-second window, Redis-backed (`vs:srl:<tenant>:<window>` keys with 65s TTL). Pre-flight check throws `SpendRateLimitExceededError` once a tenant hits 100%; the orchestrator maps that to 429 + Retry-After. Soft-warn at 80% via the logger and an optional callback hook (audit-friendly). Configurable via `SPEND_RATE_PER_MINUTE_MICRODOLLARS` (default $100/min); set to 0 to disable. Sits alongside the existing month-cap — the month-cap stops *sustained* spend, this stops the *rate*, so a runaway worker can't burn through a month of budget in 10 minutes.
+- **G2.9 — Anthropic egress boundary enforcement.** ESLint `no-restricted-imports` rule blocks `@anthropic-ai/sdk` imports from anywhere under `apps/gateway/src/**` except `apps/gateway/src/anthropic/`. New `apps/gateway/src/anthropic/types.ts` re-exports the SDK types the rest of the gateway needs (`Message`, `MessageCreateParamsNonStreaming`, etc.) so consumers route through the wrapper module instead of touching the package directly. New `scripts/check-anthropic-boundary.sh` is the CI belt-and-braces — runs from `make boundary` (wired into `make verify`); regex-tightened so doc comments referencing the SDK aren't false positives; works with `rg` or falls back to `find` + `grep` so it runs anywhere.
+
+Test additions: 9 unit tests on `PromptRegistry` (valid load, SHA stability across edits, malformed/duplicate handling, README skip, slug validation, missing directory) and 7 on `SpendRateLimiter` (FakeRedis stub; per-tenant isolation, cap-zero short-circuit, soft-warn-once-per-crossing, retry-after surface).
+
 ### Added — Phase 24: identity v2 (magic-link auth + per-module RBAC)
 
 Replaces the single `GATEWAY_ADMIN_KEY` model with a real user table, per-module roles (viewer/operator/admin on redact/scan/compliance), magic-link sign-in, session cookies, and an admin SPA Users page. The legacy `X-Admin-Key` header continues to work as a parallel auth path for bootstrap and operator scripts.

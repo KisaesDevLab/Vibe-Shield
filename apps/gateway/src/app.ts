@@ -4,7 +4,6 @@
  * real deps.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
 import express, { type Express } from 'express';
 import type { Logger } from 'pino';
 import type {
@@ -23,6 +22,7 @@ import type { AnthropicMessagesClient } from './anthropic/client.js';
 import type { AnthropicClientHolder } from './anthropic/holder.js';
 import type { probeAnthropicKey } from './anthropic/probe.js';
 import type { AnthropicKeyReprobe } from './anthropic/reprobe.js';
+import type { Anthropic } from './anthropic/types.js';
 import type { Mailer } from './auth/mailer.js';
 import { sessionAuthMiddleware } from './middleware/session-auth.js';
 import { authRouter } from './routes/auth.js';
@@ -33,8 +33,10 @@ import { apiKeyMiddleware } from './middleware/api-key.js';
 import { correlationIdMiddleware } from './middleware/correlation-id.js';
 import { sizeLimitMiddleware } from './middleware/size-limit.js';
 import type { PolicyResolver } from './policy/resolver.js';
+import type { PromptRegistry } from './prompts/registry.js';
 import type { RateLimiter } from './quota/rate-limiter.js';
 import type { SpendTracker } from './quota/spend-cap.js';
+import type { SpendRateLimiter } from './quota/spend-rate-limiter.js';
 import { adminRouter } from './routes/admin.js';
 import { healthRouter } from './routes/health.js';
 import { materializeRouter } from './routes/materialize.js';
@@ -66,6 +68,10 @@ export interface AppDeps {
   engineUrl?: string;
   rateLimiter?: RateLimiter;
   spendTracker?: SpendTracker;
+  /** Phase 25 G2.8 — per-minute spend rate cap. */
+  spendRateLimiter?: SpendRateLimiter;
+  /** Phase 25 G2.6 — versioned prompt template registry. */
+  promptRegistry?: PromptRegistry;
   policies?: PolicyResolver;
   zdrEnabled?: boolean;
   audit?: AuditLogger;
@@ -188,6 +194,7 @@ export function createApp(deps: AppDeps): Express {
       ...(deps.magicLinks !== undefined ? { magicLinks: deps.magicLinks } : {}),
       ...(deps.mailer !== undefined ? { mailer: deps.mailer } : {}),
       ...(deps.publicUrl !== undefined ? { publicUrl: deps.publicUrl } : {}),
+      ...(deps.promptRegistry !== undefined ? { prompts: deps.promptRegistry } : {}),
     }),
   );
 
@@ -205,6 +212,7 @@ export function createApp(deps: AppDeps): Express {
       ...(getAnthropicSdk !== undefined ? { getAnthropicSdk } : {}),
       ...(deps.rateLimiter !== undefined ? { rateLimiter: deps.rateLimiter } : {}),
       ...(deps.spendTracker !== undefined ? { spendTracker: deps.spendTracker } : {}),
+      ...(deps.spendRateLimiter !== undefined ? { spendRateLimiter: deps.spendRateLimiter } : {}),
       ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
       ...(deps.zdrEnabled !== undefined ? { zdrEnabled: deps.zdrEnabled } : {}),
       ...(deps.audit !== undefined ? { audit: deps.audit } : {}),

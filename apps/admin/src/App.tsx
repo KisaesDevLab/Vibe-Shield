@@ -8,6 +8,7 @@ import { AuditView } from './views/AuditView.js';
 import { RecognizerMissesView } from './views/RecognizerMissesView.js';
 import { AnthropicProbeView } from './views/AnthropicProbeView.js';
 import { PoliciesView } from './views/PoliciesView.js';
+import { PromptsView } from './views/PromptsView.js';
 import { UsersView } from './views/UsersView.js';
 
 export type ViewName =
@@ -16,6 +17,7 @@ export type ViewName =
   | 'misses'
   | 'probe'
   | 'policies'
+  | 'prompts'
   | 'users';
 
 /**
@@ -108,6 +110,7 @@ export function App(): JSX.Element {
         {view === 'misses' && <RecognizerMissesView client={client} />}
         {view === 'probe' && <AnthropicProbeView client={client} />}
         {view === 'policies' && <PoliciesView client={client} />}
+        {view === 'prompts' && <PromptsView client={client} />}
         {view === 'users' && me.is_org_admin && <UsersView client={client} />}
       </main>
     </div>

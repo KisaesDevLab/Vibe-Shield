@@ -65,6 +65,22 @@ const configSchema = z.object({
     .int()
     .nonnegative()
     .default(500_000_000),
+  /** Phase 25 G2.8 — per-tenant per-minute spend rate cap in
+   *  micro-dollars (USD * 1e6). Default $100/min. Set to 0 to disable.
+   *  Soft-warn at 80%; hard-throws at 100% (orchestrator → 429 + Retry-After). */
+  SPEND_RATE_PER_MINUTE_MICRODOLLARS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(100_000_000),
+  /** Phase 25 G2.6 — directory of versioned prompt template markdown
+   *  files. When unset or non-existent the registry loads empty (the
+   *  Phase 28 internal API is the first consumer; until then there are
+   *  no callers). */
+  PROMPTS_DIR: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? undefined : v)),
   /** Periodic Anthropic key re-probe interval (ms). v1.1 §3.7. Set to
    *  0 to disable; default 15 minutes. The re-probe never crashes the
    *  gateway — failures are surfaced via structured warn logs and the

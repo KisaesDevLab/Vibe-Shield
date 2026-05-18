@@ -79,6 +79,8 @@ export interface AdminDeps {
   mailer?: import('../auth/mailer.js').Mailer;
   /** Phase 24: public URL for magic-link URL composition. */
   publicUrl?: string;
+  /** Phase 25 G2.6: prompt template registry. */
+  prompts?: import('../prompts/registry.js').PromptRegistry;
 }
 
 const issueBody = z.object({
@@ -639,6 +641,29 @@ export function adminRouter(deps: AdminDeps): Router {
             .catch(() => undefined);
         }
         res.status(204).end();
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  // ---- Prompt templates (Phase 25 G2.6, read-only list) -------
+
+  router.get('/v1/admin/prompts', (req, res, next) => {
+    void (async () => {
+      try {
+        if (deps.prompts === undefined) {
+          res.json([]);
+          return;
+        }
+        res.json(
+          deps.prompts.list().map((t) => ({
+            id: t.id,
+            sha: t.sha,
+            description: t.description,
+            model_hint: t.modelHint,
+          })),
+        );
       } catch (err) {
         next(err);
       }

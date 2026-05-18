@@ -340,17 +340,15 @@ Tests: end-to-end magic-link issue → consume → session, expired link rejecti
 
 ---
 
-### Phase 25 — [addendum G2] Egress wrapper consolidation deltas
+### Phase 25 — [addendum G2] Egress wrapper consolidation deltas **[shipped, v1.3]**
 
-The gateway is already the only path to Anthropic. Three open items strengthen that property:
+The gateway is already the only path to Anthropic. Three deltas tightened that property:
 
-**Items:**
+- **G2.6 — Versioned prompt template registry.** `apps/gateway/src/prompts/registry.ts` loads `*.md` templates from `PROMPTS_DIR` at startup, computes SHA-256 of each, exposes `get(id)` and `list()`. Admin UI surfaces them at `/v1/admin/prompts`. The audit-recording wire-up lives in the orchestrator for Phase 28 to plug a `promptId` into.
+- **G2.8 — Per-tenant per-minute spend rate cap.** `apps/gateway/src/quota/spend-rate-limiter.ts` — fixed-window Redis-backed cap that sits alongside the month-cap. Pre-flight checks → 429 + Retry-After on breach; post-flight records actual cost; soft-warn at 80%. Env: `SPEND_RATE_PER_MINUTE_MICRODOLLARS`, default $100/min.
+- **G2.9 — Anthropic egress boundary.** ESLint `no-restricted-imports` blocks `@anthropic-ai/sdk` outside `apps/gateway/src/anthropic/`; `apps/gateway/src/anthropic/types.ts` re-exports the SDK types the rest of the gateway needs. `scripts/check-anthropic-boundary.sh` runs from `make boundary` (wired into `make verify`) as the CI belt-and-braces.
 
-- **G2.6** Versioned prompt template registry: markdown files under `apps/gateway/src/prompts/` keyed by `prompt_id`; the wrapper records the template SHA in the audit row for every Claude call (so a future review can prove which prompt produced which extraction)
-- **G2.8** Redis-backed leaky-bucket spend rate-limit per tenant per minute (current implementation is a flat per-minute cap); soft warning at 80%, hard cap at 100% queues calls
-- **G2.9** Boundary test: `import 'anthropic'` is allowed only from `apps/gateway/src/anthropic/`. Add an ESLint `no-restricted-imports` rule + a CI grep check that walks `apps/` and fails on offending imports. Catches a future regression where a new feature short-circuits the wrapper.
-
-Small phase; can ship before Phase 24.
+Tests: 9 on the registry (load + SHA stability + malformed handling), 7 on the rate limiter (per-tenant isolation, soft-warn, retry-after). Shipped before Phases 26–27 land so future module work cannot accidentally bypass the wrapper.
 
 ---
 

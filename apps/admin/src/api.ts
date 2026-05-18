@@ -143,6 +143,12 @@ export class AdminClient {
     return this.request(`/v1/admin/users/${userId}`, { method: 'DELETE' });
   }
 
+  // ----- Prompts (Phase 25 G2.6) ---------------------------------
+
+  listPrompts(): Promise<PromptRow[]> {
+    return this.request('/v1/admin/prompts');
+  }
+
   // ----- API Keys -------------------------------------------------
 
   listApiKeys(): Promise<ApiKeyRow[]> {
@@ -302,4 +308,14 @@ export interface MeResponse {
   is_org_admin: boolean;
   roles: Partial<Record<ModuleName, RoleName>>;
   mailer_configured: boolean;
+}
+
+/** Phase 25 G2.6 — prompt template summary surfaced in the admin SPA. */
+export interface PromptRow {
+  id: string;
+  /** SHA-256 of the raw template file (64 hex chars). Recorded in
+   *  the audit row of every call that uses this template. */
+  sha: string;
+  description: string | null;
+  model_hint: string | null;
 }

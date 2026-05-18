@@ -17,7 +17,7 @@
  */
 
 import type { TokenVault } from '@kisaesdevlab/vibe-shield-schema';
-import type { Message } from '@anthropic-ai/sdk/resources/messages.mjs';
+import type { Message } from '../anthropic/types.js';
 import {
   FULL_POLICY,
   type ReidPolicy,

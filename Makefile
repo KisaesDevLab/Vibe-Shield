@@ -57,8 +57,11 @@ endif
 build: ## Production build for all workspaces
 	pnpm run build
 
-verify: lint typecheck test ## Gate run after each phase (lint + typecheck + tests)
+verify: lint typecheck boundary test ## Gate run after each phase (lint + typecheck + boundary + tests)
 	@echo "verify: ok"
+
+boundary: ## Phase 25 G2.9 — Anthropic SDK boundary check
+	sh scripts/check-anthropic-boundary.sh
 
 migrate: ## Run pending DB migrations (Drizzle)
 	pnpm --filter @kisaesdevlab/vibe-shield-schema migrate
