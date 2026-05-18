@@ -35,10 +35,13 @@ shield.{$VIBE_DOMAIN} {
 
   encode gzip zstd
 
-  # Same-origin: admin UI fetches /v1/admin/* from this host.
-  # Route /v1/admin/* to the gateway container; everything else is
-  # the static SPA.
+  # Same-origin: admin UI fetches /v1/admin/* and /api/auth/* from
+  # this host. Route both to the gateway container; everything else
+  # is the static SPA.
   handle /v1/admin/* {
+    reverse_proxy vibe-shield-gateway:8080
+  }
+  handle /api/auth/* {
     reverse_proxy vibe-shield-gateway:8080
   }
 

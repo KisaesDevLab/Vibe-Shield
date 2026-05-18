@@ -318,23 +318,25 @@ Pre-prod checklist, beta-firm review of `vs_recognizer_misses`, KEK rotation reh
 
 ---
 
-### Phase 24 — [addendum B/C] Identity v2: users + magic-link auth + per-module RBAC
+### Phase 24 — [addendum B/C] Identity v2: users + magic-link auth + per-module RBAC **[shipped, v1.3]**
 
-The current admin model is a single `GATEWAY_ADMIN_KEY` header. Modules 2 + 3 and several of the future operator workflows need a real user model. Per-module RBAC replaces the single admin bit.
+Replaced the single `GATEWAY_ADMIN_KEY` header with a real user model + per-module RBAC. Magic-link sign-in is the primary path; the legacy `X-Admin-Key` header continues to work as a parallel auth method for bootstrap and operator scripts.
 
-**Items:**
+Shipped items:
 
-- `users` table (id, email, is_org_admin bool, created_at, last_login_at)
-- `user_sessions` table (magic-link consumed → session token with TTL)
-- `user_roles` table (user_id, module enum('redact','scan','compliance'), role enum('viewer','operator','admin')); unique on `(user_id, module)`
-- Magic-link flow: `POST /api/auth/request-link` → SMTP → `GET /api/auth/consume?token=…` → session cookie
-- `requires(module, min_role)` middleware replaces the single admin gate; `adminAuthMiddleware` becomes a thin compatibility wrapper for the legacy `X-Admin-Key` path during migration
-- Bootstrap admin: first install creates one `is_org_admin=true` user with `admin` role in every module
-- Admin UI gains a Users page (org_admin only); LoginGate switches from key paste to magic-link request
-- Audit events `user.created`, `user.role_changed`, `user.magic_link_requested`, `user.magic_link_consumed`
-- Tests: role matrix enforcement at each `/v1/*` endpoint, magic-link expiry, bootstrap idempotence
+- `vs_users` table (UUID id, email unique-where-active, `is_org_admin`, `created_at`, `last_login_at`, `disabled_at` soft-delete)
+- `vs_user_sessions` table (32-byte tokens, SHA-256 hash-stored, sliding 24h idle TTL, `revoked_at` tombstone)
+- `vs_user_roles` table (`(user_id, module)` PK, CHECK constraints on module enum + role enum)
+- `vs_magic_links` table (single-use, 15-min TTL, hash-stored, `requested_ip` for abuse analysis)
+- Magic-link flow: `POST /api/auth/request-link` (anti-enumeration: 204 whether email exists or not) → SMTP → `GET /api/auth/consume?token=…` → sets `vs_session` cookie + 302s to `/`
+- `requires(module, min_role)` + `requiresOrgAdmin()` middleware factories in `apps/gateway/src/middleware/requires.ts`
+- `adminAuthMiddleware` now accepts an `org_admin` session OR the `X-Admin-Key` header — both paths reach `/v1/admin/*`
+- Bootstrap admin: when `vs_users` is empty AND `BOOTSTRAP_ADMIN_EMAIL` is set, the email is created as `is_org_admin=true` with admin role on all three modules. Idempotent.
+- Admin SPA: `LoginGate` rewritten with magic-link request (default) + admin-key paste (fallback). `UsersView` (org_admin only) for invite + per-module role grid + disable.
+- Audit events on `module='identity'`: magic-link requested, session create, session purge (logout), user created, role changed.
+- Caddy + Vite both route `/api/auth/*` to the gateway so the session cookie is same-origin with the SPA.
 
-This is a prerequisite for Phases 26 + 27 because both rely on per-module roles. Phase 23.5's `X-Admin-Key` model continues to work in parallel until Phase 24 lands.
+Tests: end-to-end magic-link issue → consume → session, expired link rejection, X-Admin-Key backward-compat, non-org-admin RBAC denial, logout revocation. Unit tests on token format + `roleSatisfies` ranking.
 
 ---
 

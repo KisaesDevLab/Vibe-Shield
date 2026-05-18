@@ -35,15 +35,27 @@ interface RequestOptions {
 }
 
 export class AdminClient {
-  constructor(private readonly adminKey: string) {}
+  /**
+   * @param adminKey  Legacy ``X-Admin-Key`` (Phase 13). When undefined,
+   *                  the client relies on the ``vs_session`` cookie set
+   *                  by Phase 24 magic-link sign-in. Both paths work
+   *                  for /v1/admin/* routes.
+   */
+  constructor(private readonly adminKey: string | undefined = undefined) {}
 
   private async request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (this.adminKey !== undefined) {
+      headers['X-Admin-Key'] = this.adminKey;
+    }
     const init: RequestInit = {
       method: opts.method ?? 'GET',
-      headers: {
-        'X-Admin-Key': this.adminKey,
-        'Content-Type': 'application/json',
-      },
+      headers,
+      // Send vs_session cookie with same-origin requests so the
+      // session-auth middleware can resolve req.user.
+      credentials: 'same-origin',
     };
     if (opts.body !== undefined) {
       init.body = JSON.stringify(opts.body);
@@ -63,6 +75,72 @@ export class AdminClient {
     }
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
+  }
+
+  // ----- Auth (Phase 24) ------------------------------------------
+
+  /** Hydrate the signed-in user. 401 if no session + no admin key. */
+  me(): Promise<MeResponse> {
+    return this.request('/api/auth/me');
+  }
+
+  /** Request a magic-link email. Always returns 204; never leaks
+   *  whether the email exists. */
+  requestMagicLink(email: string): Promise<void> {
+    return this.request('/api/auth/request-link', {
+      method: 'POST',
+      body: { email },
+    });
+  }
+
+  /** Clear the session cookie + revoke server-side. */
+  logout(): Promise<void> {
+    return this.request('/api/auth/logout', { method: 'POST' });
+  }
+
+  // ----- Users (Phase 24) -----------------------------------------
+
+  listUsers(): Promise<UserRow[]> {
+    return this.request('/v1/admin/users');
+  }
+
+  inviteUser(input: {
+    email: string;
+    isOrgAdmin?: boolean;
+    roles?: Partial<Record<'redact' | 'scan' | 'compliance', 'viewer' | 'operator' | 'admin'>>;
+  }): Promise<UserInviteResponse> {
+    return this.request('/v1/admin/users', { method: 'POST', body: input });
+  }
+
+  setUserRole(
+    userId: string,
+    module: 'redact' | 'scan' | 'compliance',
+    role: 'viewer' | 'operator' | 'admin',
+  ): Promise<void> {
+    return this.request(`/v1/admin/users/${userId}/roles`, {
+      method: 'PUT',
+      body: { module, role },
+    });
+  }
+
+  revokeUserRole(
+    userId: string,
+    module: 'redact' | 'scan' | 'compliance',
+  ): Promise<void> {
+    return this.request(`/v1/admin/users/${userId}/roles/${module}`, {
+      method: 'DELETE',
+    });
+  }
+
+  setUserOrgAdmin(userId: string, isOrgAdmin: boolean): Promise<void> {
+    return this.request(`/v1/admin/users/${userId}/org-admin`, {
+      method: 'PUT',
+      body: { isOrgAdmin },
+    });
+  }
+
+  disableUser(userId: string): Promise<void> {
+    return this.request(`/v1/admin/users/${userId}`, { method: 'DELETE' });
   }
 
   // ----- API Keys -------------------------------------------------
@@ -194,4 +272,34 @@ export interface PolicySummary {
   name: string;
   version: number;
   zdr_required: boolean;
+}
+
+/** Phase 24 — Users + RBAC. */
+export type ModuleName = 'redact' | 'scan' | 'compliance';
+export type RoleName = 'viewer' | 'operator' | 'admin';
+
+export interface UserRow {
+  id: string;
+  email: string;
+  is_org_admin: boolean;
+  created_at: string;
+  last_login_at: string | null;
+  disabled_at: string | null;
+  roles: Partial<Record<ModuleName, RoleName>>;
+}
+
+export interface UserInviteResponse {
+  id: string;
+  email: string;
+  is_org_admin: boolean;
+  /** True iff SMTP was configured and the magic-link email was sent. */
+  invited: boolean;
+}
+
+export interface MeResponse {
+  id: string;
+  email: string;
+  is_org_admin: boolean;
+  roles: Partial<Record<ModuleName, RoleName>>;
+  mailer_configured: boolean;
 }

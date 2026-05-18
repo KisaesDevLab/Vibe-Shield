@@ -4,6 +4,21 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added — Phase 24: identity v2 (magic-link auth + per-module RBAC)
+
+Replaces the single `GATEWAY_ADMIN_KEY` model with a real user table, per-module roles (viewer/operator/admin on redact/scan/compliance), magic-link sign-in, session cookies, and an admin SPA Users page. The legacy `X-Admin-Key` header continues to work as a parallel auth path for bootstrap and operator scripts.
+
+- **Schema** — migration `0005_identity.sql` adds `vs_users` (email unique-where-active, `is_org_admin`, `disabled_at`), `vs_user_roles` ((user_id, module) PK with CHECK on module+role enums), `vs_magic_links` (single-use, 15-min TTL, hash-stored), `vs_user_sessions` (32-byte tokens, hash-stored, sliding 24h idle TTL).
+- **Vault** — `UserStore` (create/find/setRole/disable/listAll + idempotent `setRole` upsert), `MagicLinkStore` (issue/consume/reapExpired; cleartext returned once, hash persisted), `UserSessionStore` (issue/validate-with-slide/revoke/revokeAllForUser). `roleSatisfies(actual, minimum)` for RBAC ranking.
+- **Gateway** — `apps/gateway/src/auth/mailer.ts` wraps nodemailer with a plaintext-only magic-link email. `apps/gateway/src/auth/cookie.ts` is a tiny hand-rolled cookie helper (HttpOnly + SameSite=Lax + Path=/ always; Secure when `NODE_ENV=production`). `apps/gateway/src/middleware/session-auth.ts` resolves the `vs_session` cookie and hydrates `req.user` with the per-module role map; tolerant — missing cookies don't 401 here. `apps/gateway/src/middleware/requires.ts` exports `requires(module, role)` and `requiresOrgAdmin()` middleware factories.
+- **Auth routes** — `POST /api/auth/request-link` (returns 204 whether the email exists or not — anti-enumeration), `GET /api/auth/consume?token=…` (validates + sets cookie + 302s to `/`), `POST /api/auth/logout`, `GET /api/auth/me`. When SMTP is unset, `request-link` returns 501 with a clear message; admin-key path continues to work.
+- **Admin endpoints** — `GET/POST /v1/admin/users`, `PUT /v1/admin/users/:id/roles`, `DELETE /v1/admin/users/:id/roles/:module`, `PUT /v1/admin/users/:id/org-admin`, `DELETE /v1/admin/users/:id`. Inviting a user issues a magic link when SMTP is configured. `adminAuthMiddleware` now accepts an `org_admin` session OR the `X-Admin-Key` header — both paths reach the same routes.
+- **Bootstrap admin** — on first boot, if `vs_users` is empty AND `BOOTSTRAP_ADMIN_EMAIL` is set, that email is created with `is_org_admin=true` and admin role on all three modules. Idempotent.
+- **Admin UI** — `LoginGate` rewritten with two paths: magic-link request (default) and admin-key paste (fallback when SMTP isn't configured). On load the SPA probes `GET /api/auth/me` via the session cookie — if it succeeds, the SPA renders the authenticated UI directly; otherwise it shows `LoginGate`. New `UsersView` (visible to org_admin only) — invite + per-module role grid + org-admin toggle + disable. Sidebar shows the signed-in email + an org-admin chip.
+- **Caddy + Vite** — `appliance/caddy.snippet` adds `/api/auth/*` → gateway routing on the admin domain so cookies are set same-origin. Vite dev-server proxy forwards `/api/auth/*` to `http://127.0.0.1:8080` for local development.
+- **Config additions** — `PUBLIC_URL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TLS`, `BOOTSTRAP_ADMIN_EMAIL`, `SESSION_IDLE_TTL_MINUTES`, `MAGIC_LINK_TTL_MINUTES`. All optional — when SMTP is unset, the X-Admin-Key path is the only way in.
+- **Audit events** — magic-link request, session create, session purge (logout), user created, user role changed — all written with `module: 'identity'`.
+
 ### Added — Phase 23.5: admin Anthropic-key management
 
 The admin UI can now rotate the Anthropic API key without an appliance redeploy. The env-set `ANTHROPIC_API_KEY` remains the bootstrap fallback for fresh installs; once an operator sets a key via the admin SPA it is persisted encrypted under the appliance KEK and overrides the env value on the next request.
