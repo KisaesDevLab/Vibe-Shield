@@ -87,6 +87,9 @@ services:
       MAX_REQUEST_BYTES: ${VIBE_SHIELD_MAX_REQUEST_BYTES:-1048576}
       SESSION_TTL_MINUTES: ${VIBE_SHIELD_SESSION_TTL_MINUTES:-60}
       LOG_LEVEL: ${VIBE_SHIELD_LOG_LEVEL:-info}
+      # Phase 25 G2.8 / G2.6
+      SPEND_RATE_PER_MINUTE_MICRODOLLARS: ${VIBE_SHIELD_SPEND_RATE_PER_MINUTE:-100000000}
+      PROMPTS_DIR: ${VIBE_SHIELD_PROMPTS_DIR:-}
       # Phase 24 — magic-link sign-in (v1.3+). All optional; unset
       # SMTP_HOST disables magic-link and forces X-Admin-Key auth.
       PUBLIC_URL: ${VIBE_SHIELD_PUBLIC_URL:-}

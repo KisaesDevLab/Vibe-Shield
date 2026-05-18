@@ -59,6 +59,11 @@ export class PromptRegistry {
    * Load every ``*.md`` file under ``dir``. Files without a valid ``id``
    * frontmatter are skipped with a warn-level log (passed via the
    * optional ``onWarn`` hook). Duplicate ids throw.
+   *
+   * Resource limits (review-pass v1.3): each file capped at
+   * ``MAX_TEMPLATE_BYTES`` (1 MB); each frontmatter value capped at
+   * ``MAX_HEADER_VALUE_LENGTH`` (10 KB) so a pathological template
+   * can't OOM the gateway at startup.
    */
   async load(
     dir: string,
@@ -83,7 +88,13 @@ export class PromptRegistry {
       if (entry.toLowerCase() === 'readme.md') continue;
       const path = join(dir, entry);
       const raw = await readFile(path);
-      const parsed = parseTemplate(raw);
+      if (raw.length > MAX_TEMPLATE_BYTES) {
+        onWarn?.(
+          `prompt template ${entry} exceeds ${MAX_TEMPLATE_BYTES.toString()} bytes; skipping`,
+        );
+        continue;
+      }
+      const parsed = parseTemplate(raw, onWarn);
       if (parsed === null) {
         onWarn?.(`prompt template ${entry} missing required id frontmatter`);
         continue;
@@ -123,13 +134,27 @@ export class PromptRegistry {
 
 const SLUG_RE = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 
-function parseTemplate(raw: Buffer): PromptTemplate | null {
+/** Whole-file cap. 1 MB is enormous for a prompt; if you need more,
+ *  you almost certainly want a different mechanism. */
+const MAX_TEMPLATE_BYTES = 1_000_000;
+/** Per-frontmatter-value cap. Protects the parser from a single
+ *  pathological value that fills memory. */
+const MAX_HEADER_VALUE_LENGTH = 10_000;
+/** Frontmatter line cap. Bounds scan cost when ``---`` is missing. */
+const MAX_HEADER_LINES = 100;
+
+function parseTemplate(
+  raw: Buffer,
+  onWarn?: (msg: string) => void,
+): PromptTemplate | null {
   const text = raw.toString('utf8').replace(/\r\n/g, '\n');
   const sha = createHash('sha256').update(raw).digest('hex');
   const lines = text.split('\n');
   if (lines[0] !== '---') return null;
   let close = -1;
-  for (let i = 1; i < lines.length; i++) {
+  // Bound the scan: if we don't see the closing fence within
+  // MAX_HEADER_LINES, give up — likely a file without proper frontmatter.
+  for (let i = 1; i < lines.length && i <= MAX_HEADER_LINES + 1; i++) {
     if (lines[i] === '---') {
       close = i;
       break;
@@ -150,6 +175,12 @@ function parseTemplate(raw: Buffer): PromptTemplate | null {
       (value.startsWith("'") && value.endsWith("'"))
     ) {
       value = value.slice(1, -1);
+    }
+    if (value.length > MAX_HEADER_VALUE_LENGTH) {
+      onWarn?.(
+        `prompt template header value for "${key}" exceeds ${MAX_HEADER_VALUE_LENGTH.toString()} chars; skipping`,
+      );
+      return null;
     }
     if (key !== '') header[key] = value;
   }
