@@ -70,4 +70,17 @@ export default tseslint.config(
       'no-restricted-imports': 'off',
     },
   },
+  // k6 load scripts under qa/load/ run in the k6 JavaScript VM which
+  // exposes ``__ENV``, ``__ITER``, ``__VU`` as ambient globals not in
+  // standard Node lib. Declare them so ESLint stops false-positiving.
+  {
+    files: ['qa/load/**/*.js'],
+    languageOptions: {
+      globals: {
+        __ENV: 'readonly',
+        __ITER: 'readonly',
+        __VU: 'readonly',
+      },
+    },
+  },
 );
