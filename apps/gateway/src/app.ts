@@ -12,14 +12,20 @@ import type {
   ApplianceSecretStore,
   AuditLogger,
   Database,
+  MagicLinkStore,
   RecognizerMissStore,
   SessionManager,
   TokenVault,
+  UserSessionStore,
+  UserStore,
 } from '@kisaesdevlab/vibe-shield-schema';
 import type { AnthropicMessagesClient } from './anthropic/client.js';
 import type { AnthropicClientHolder } from './anthropic/holder.js';
 import type { probeAnthropicKey } from './anthropic/probe.js';
 import type { AnthropicKeyReprobe } from './anthropic/reprobe.js';
+import type { Mailer } from './auth/mailer.js';
+import { sessionAuthMiddleware } from './middleware/session-auth.js';
+import { authRouter } from './routes/auth.js';
 import type { EngineClient } from './engine/client.js';
 import { errorHandler } from './errors.js';
 import { accessLogMiddleware } from './middleware/access-log.js';
@@ -75,6 +81,14 @@ export interface AppDeps {
   bootstrapApiKey?: string;
   /** Phase 23.5 probe override for tests. */
   probeFn?: typeof probeAnthropicKey;
+  /** Phase 24 — user / session / magic-link / mailer wiring. When all
+   *  four are supplied the /api/auth/* routes and session middleware
+   *  light up. Missing any of them downgrades to X-Admin-Key-only. */
+  users?: UserStore;
+  userSessions?: UserSessionStore;
+  magicLinks?: MagicLinkStore;
+  mailer?: Mailer;
+  publicUrl?: string;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -114,10 +128,44 @@ export function createApp(deps: AppDeps): Express {
   app.use(sizeLimitMiddleware(deps.maxRequestBytes));
   app.use(express.json({ limit: deps.maxRequestBytes }));
 
+  // Phase 24: session-cookie auth. Runs before the routes so admin and
+  // /api/auth/me see req.user. Tolerant: missing/invalid cookies do
+  // not 401 here — that's the route's call.
+  if (deps.userSessions !== undefined && deps.users !== undefined) {
+    app.use(
+      sessionAuthMiddleware({
+        sessions: deps.userSessions,
+        users: deps.users,
+      }),
+    );
+  }
+
   app.use(healthRouter());
   app.use(readyRouter({ db: deps.db, ...(deps.engineUrl !== undefined ? { engineUrl: deps.engineUrl } : {}) }));
   app.use(openapiRouter());
   app.use(metricsRouter());
+
+  // Phase 24: /api/auth/* — magic-link sign-in. Only mounts when the
+  // user/session/magic-link stores are present.
+  if (
+    deps.users !== undefined &&
+    deps.userSessions !== undefined &&
+    deps.magicLinks !== undefined
+  ) {
+    const secureCookies = process.env['NODE_ENV'] === 'production';
+    app.use(
+      authRouter({
+        users: deps.users,
+        sessions: deps.userSessions,
+        magicLinks: deps.magicLinks,
+        ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
+        ...(deps.mailer !== undefined ? { mailer: deps.mailer } : {}),
+        ...(deps.publicUrl !== undefined ? { publicUrl: deps.publicUrl } : {}),
+        secureCookies,
+        logger: deps.logger,
+      }),
+    );
+  }
 
   // Admin routes must mount BEFORE the v1 tenant-key router because
   // both share the /v1 prefix. Express matches routes in registration
@@ -136,6 +184,10 @@ export function createApp(deps: AppDeps): Express {
       ...(deps.applianceSecrets !== undefined ? { applianceSecrets: deps.applianceSecrets } : {}),
       ...(deps.bootstrapApiKey !== undefined ? { bootstrapApiKey: deps.bootstrapApiKey } : {}),
       ...(deps.probeFn !== undefined ? { probeFn: deps.probeFn } : {}),
+      ...(deps.users !== undefined ? { users: deps.users } : {}),
+      ...(deps.magicLinks !== undefined ? { magicLinks: deps.magicLinks } : {}),
+      ...(deps.mailer !== undefined ? { mailer: deps.mailer } : {}),
+      ...(deps.publicUrl !== undefined ? { publicUrl: deps.publicUrl } : {}),
     }),
   );
 

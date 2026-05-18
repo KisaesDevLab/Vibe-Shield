@@ -17,14 +17,18 @@ import {
   ApiKeyStore,
   ApplianceSecretStore,
   AuditLogger,
+  MagicLinkStore,
   RecognizerMissStore,
   SessionManager,
   TokenVault,
+  UserSessionStore,
+  UserStore,
   createDatabase,
   loadKek,
 } from '@kisaesdevlab/vibe-shield-schema';
 import { AnthropicClientHolder } from './anthropic/holder.js';
 import { probeAnthropicKey } from './anthropic/probe.js';
+import { Mailer } from './auth/mailer.js';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { AnthropicKeyReprobe } from './anthropic/reprobe.js';
@@ -105,6 +109,69 @@ async function main(): Promise<void> {
   });
   reprobe.start();
 
+  // Phase 24 — identity v2 wiring. Constructed unconditionally; the
+  // auth routes themselves degrade gracefully when SMTP isn't set.
+  const userStore = new UserStore(dbHandle.db);
+  const userSessionStore = new UserSessionStore(
+    dbHandle.db,
+    config.SESSION_IDLE_TTL_MINUTES,
+  );
+  const magicLinkStore = new MagicLinkStore(
+    dbHandle.db,
+    config.MAGIC_LINK_TTL_MINUTES,
+  );
+
+  // Optional SMTP — only construct the Mailer if SMTP_HOST is set.
+  // When unset, /api/auth/request-link returns 503 with a clear
+  // message and operators continue to use X-Admin-Key.
+  let mailer: Mailer | undefined;
+  if (config.SMTP_HOST !== undefined && config.SMTP_HOST !== '') {
+    mailer = new Mailer({
+      host: config.SMTP_HOST,
+      port: config.SMTP_PORT,
+      user: config.SMTP_USER,
+      password: config.SMTP_PASSWORD,
+      from: config.SMTP_FROM ?? `vibe-shield@${config.SMTP_HOST}`,
+      tls: config.SMTP_TLS,
+      logger,
+    });
+    try {
+      await mailer.verify();
+      logger.info({ host: config.SMTP_HOST }, 'smtp connection verified');
+    } catch (err) {
+      logger.warn(
+        {
+          host: config.SMTP_HOST,
+          error_class: err instanceof Error ? err.name : 'Unknown',
+        },
+        'smtp verification failed; magic-link emails may fail',
+      );
+    }
+  }
+
+  // Bootstrap admin: on first boot, when the users table is empty AND
+  // BOOTSTRAP_ADMIN_EMAIL is set, create that user as is_org_admin=true
+  // with admin role on every module. Idempotent — subsequent boots are
+  // a no-op once anyone exists.
+  if (config.BOOTSTRAP_ADMIN_EMAIL !== undefined) {
+    const existing = await userStore.count();
+    if (existing === 0) {
+      const bootstrap = await userStore.create({
+        email: config.BOOTSTRAP_ADMIN_EMAIL,
+        isOrgAdmin: true,
+      });
+      await Promise.all([
+        userStore.setRole(bootstrap.id, 'redact', 'admin'),
+        userStore.setRole(bootstrap.id, 'scan', 'admin'),
+        userStore.setRole(bootstrap.id, 'compliance', 'admin'),
+      ]);
+      logger.info(
+        { user_id: bootstrap.id, email_domain: bootstrap.email.split('@')[1] ?? '?' },
+        'bootstrap admin created',
+      );
+    }
+  }
+
   const app = createApp({
     db: dbHandle.db,
     apiKeys,
@@ -120,6 +187,11 @@ async function main(): Promise<void> {
     recognizerMisses,
     applianceSecrets,
     bootstrapApiKey: config.ANTHROPIC_API_KEY,
+    users: userStore,
+    userSessions: userSessionStore,
+    magicLinks: magicLinkStore,
+    ...(mailer !== undefined ? { mailer } : {}),
+    ...(config.PUBLIC_URL !== undefined ? { publicUrl: config.PUBLIC_URL } : {}),
     logger,
     maxRequestBytes: config.MAX_REQUEST_BYTES,
     sessionTtlMinutes: config.SESSION_TTL_MINUTES,

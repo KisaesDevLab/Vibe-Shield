@@ -36,6 +36,13 @@
       "when": 1747530000000,
       "tag": "0004_audit_module",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1747612800000,
+      "tag": "0005_identity",
+      "breakpoints": true
     }
   ]
 }

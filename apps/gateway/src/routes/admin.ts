@@ -48,8 +48,12 @@ import type { PolicyResolver } from '../policy/resolver.js';
 export interface AdminDeps {
   /**
    * The admin key the operator presents in X-Admin-Key. Loaded from
-   * GATEWAY_ADMIN_KEY env var by the entry point. If undefined, the
-   * router refuses every request with 401 (admin disabled).
+   * GATEWAY_ADMIN_KEY env var by the entry point.
+   *
+   * Phase 24 made this co-exist with the session-cookie path: admin
+   * routes pass when EITHER the X-Admin-Key matches OR ``req.user``
+   * has ``is_org_admin=true``. When both are undefined the router
+   * refuses every request with 401.
    */
   adminKey?: string;
   apiKeys: ApiKeyStore;
@@ -65,6 +69,14 @@ export interface AdminDeps {
   bootstrapApiKey?: string;
   /** Phase 23.5: probe override for tests. */
   probeFn?: typeof probeAnthropicKey;
+  /** Phase 24: user store for the Users page + invite flow. */
+  users?: import('@kisaesdevlab/vibe-shield-schema').UserStore;
+  /** Phase 24: magic-link store for the invite flow. */
+  magicLinks?: import('@kisaesdevlab/vibe-shield-schema').MagicLinkStore;
+  /** Phase 24: mailer for the invite flow. */
+  mailer?: import('../auth/mailer.js').Mailer;
+  /** Phase 24: public URL for magic-link URL composition. */
+  publicUrl?: string;
 }
 
 const issueBody = z.object({
@@ -75,6 +87,29 @@ const issueBody = z.object({
 
 const anthropicKeyBody = z.object({
   key: z.string().min(1, 'key is required'),
+});
+
+// Phase 24 — Users management
+
+const moduleEnum = z.enum(['redact', 'scan', 'compliance']);
+const roleEnum = z.enum(['viewer', 'operator', 'admin']);
+
+const inviteBody = z.object({
+  email: z.string().email().max(320),
+  isOrgAdmin: z.boolean().optional().default(false),
+  roles: z
+    .record(moduleEnum, roleEnum)
+    .optional()
+    .default({}),
+});
+
+const setRoleBody = z.object({
+  module: moduleEnum,
+  role: roleEnum,
+});
+
+const setOrgAdminBody = z.object({
+  isOrgAdmin: z.boolean(),
 });
 
 export function adminRouter(deps: AdminDeps): Router {
@@ -306,6 +341,203 @@ export function adminRouter(deps: AdminDeps): Router {
     })();
   });
 
+  // ---- Users + invites (Phase 24) ------------------------------
+
+  router.get('/v1/admin/users', (req, res, next) => {
+    void (async () => {
+      try {
+        if (deps.users === undefined) {
+          throw new InvalidRequestError('user store not configured');
+        }
+        const rows = await deps.users.listAll();
+        res.json(
+          rows.map((u) => ({
+            id: u.id,
+            email: u.email,
+            is_org_admin: u.isOrgAdmin,
+            created_at: u.createdAt.toISOString(),
+            last_login_at: u.lastLoginAt?.toISOString() ?? null,
+            disabled_at: u.disabledAt?.toISOString() ?? null,
+            roles: u.roles,
+          })),
+        );
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.post('/v1/admin/users', (req, res, next) => {
+    void (async () => {
+      try {
+        if (deps.users === undefined) {
+          throw new InvalidRequestError('user store not configured');
+        }
+        const parsed = inviteBody.safeParse(req.body);
+        if (!parsed.success) {
+          throw new InvalidRequestError(
+            parsed.error.issues.map((i) => i.message).join('; '),
+          );
+        }
+        const email = parsed.data.email.trim().toLowerCase();
+        // Create the user idempotently. If they already exist
+        // (re-invite), just return the existing record.
+        let user = await deps.users.findByEmail(email);
+        if (user === null) {
+          user = await deps.users.create({
+            email,
+            isOrgAdmin: parsed.data.isOrgAdmin,
+          });
+          if (deps.audit !== undefined) {
+            await deps.audit
+              .append({
+                tenantId: 'appliance',
+                eventType: 'api_key_issue',
+                module: 'identity',
+                payload: {
+                  action: 'user_created',
+                  user_id: user.id,
+                  is_org_admin: parsed.data.isOrgAdmin,
+                  email_domain: email.split('@')[1] ?? '?',
+                },
+              })
+              .catch(() => undefined);
+          }
+        }
+        // Apply roles after create.
+        for (const [m, r] of Object.entries(parsed.data.roles)) {
+          await deps.users.setRole(
+            user.id,
+            m as 'redact' | 'scan' | 'compliance',
+            r as 'viewer' | 'operator' | 'admin',
+          );
+        }
+        // Send invite email if mailer is configured.
+        let invited = false;
+        if (
+          deps.mailer !== undefined &&
+          deps.magicLinks !== undefined &&
+          deps.publicUrl !== undefined
+        ) {
+          const { token, expiresAt } = await deps.magicLinks.issue(email, req.ip ?? null);
+          const url = `${deps.publicUrl.replace(/\/$/, '')}/api/auth/consume?token=${encodeURIComponent(token)}`;
+          await deps.mailer.sendMagicLink({ to: email, url, expiresAt });
+          invited = true;
+        }
+        res.status(201).json({
+          id: user.id,
+          email: user.email,
+          is_org_admin: user.isOrgAdmin,
+          invited,
+        });
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.put('/v1/admin/users/:id/roles', (req, res, next) => {
+    void (async () => {
+      try {
+        if (deps.users === undefined) {
+          throw new InvalidRequestError('user store not configured');
+        }
+        const parsed = setRoleBody.safeParse(req.body);
+        if (!parsed.success) {
+          throw new InvalidRequestError(
+            parsed.error.issues.map((i) => i.message).join('; '),
+          );
+        }
+        const id = req.params.id ?? '';
+        const user = await deps.users.findById(id);
+        if (user === null) throw new NotFoundError('user');
+        await deps.users.setRole(id, parsed.data.module, parsed.data.role);
+        if (deps.audit !== undefined) {
+          await deps.audit
+            .append({
+              tenantId: 'appliance',
+              eventType: 'policy_change',
+              module: 'identity',
+              payload: {
+                action: 'role_set',
+                user_id: id,
+                module: parsed.data.module,
+                role: parsed.data.role,
+              },
+            })
+            .catch(() => undefined);
+        }
+        res.status(204).end();
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.delete('/v1/admin/users/:id/roles/:module', (req, res, next) => {
+    void (async () => {
+      try {
+        if (deps.users === undefined) {
+          throw new InvalidRequestError('user store not configured');
+        }
+        const id = req.params.id ?? '';
+        const m = req.params.module ?? '';
+        const parsed = moduleEnum.safeParse(m);
+        if (!parsed.success) {
+          throw new InvalidRequestError('invalid module');
+        }
+        await deps.users.revokeRole(id, parsed.data);
+        res.status(204).end();
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.put('/v1/admin/users/:id/org-admin', (req, res, next) => {
+    void (async () => {
+      try {
+        if (deps.users === undefined) {
+          throw new InvalidRequestError('user store not configured');
+        }
+        const parsed = setOrgAdminBody.safeParse(req.body);
+        if (!parsed.success) {
+          throw new InvalidRequestError(
+            parsed.error.issues.map((i) => i.message).join('; '),
+          );
+        }
+        const id = req.params.id ?? '';
+        const user = await deps.users.findById(id);
+        if (user === null) throw new NotFoundError('user');
+        await deps.users.setOrgAdmin(id, parsed.data.isOrgAdmin);
+        res.status(204).end();
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.delete('/v1/admin/users/:id', (req, res, next) => {
+    void (async () => {
+      try {
+        if (deps.users === undefined) {
+          throw new InvalidRequestError('user store not configured');
+        }
+        const id = req.params.id ?? '';
+        const user = await deps.users.findById(id);
+        if (user === null) throw new NotFoundError('user');
+        // Self-disable would lock the operator out; refuse.
+        if (req.user?.id === id) {
+          throw new InvalidRequestError('cannot disable yourself');
+        }
+        await deps.users.disable(id);
+        res.status(204).end();
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
   router.delete('/v1/admin/anthropic/key', (req, res, next) => {
     void (async () => {
       try {
@@ -386,8 +618,20 @@ function adminAuthMiddleware(
   configuredKey: string | undefined,
 ): (req: Request, res: Response, next: NextFunction) => void {
   return (req, _res, next) => {
+    // Phase 24: session-backed org_admin bypasses the X-Admin-Key
+    // header check. This is the path the SPA uses after magic-link
+    // sign-in. The legacy header path stays for service operators
+    // (curl scripts, bootstrap-before-first-user).
+    if (req.user?.isOrgAdmin === true) {
+      next();
+      return;
+    }
     if (configuredKey === undefined) {
-      next(new AuthenticationError('admin API disabled (GATEWAY_ADMIN_KEY not configured)'));
+      next(
+        new AuthenticationError(
+          'admin API disabled (no GATEWAY_ADMIN_KEY and no org_admin session)',
+        ),
+      );
       return;
     }
     const presented = req.header('x-admin-key');
