@@ -22,7 +22,7 @@
 
 import type { Response } from 'express';
 import type { TokenVault } from '@kisaesdevlab/vibe-shield-schema';
-import type Anthropic from '@anthropic-ai/sdk';
+import type { Anthropic } from '../anthropic/types.js';
 
 const TOKEN_RE = /<([A-Z][A-Z_]*?)_(\d+)>/g;
 

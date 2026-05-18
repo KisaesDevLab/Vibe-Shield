@@ -35,8 +35,10 @@ import { AnthropicKeyReprobe } from './anthropic/reprobe.js';
 import { EngineClient } from './engine/client.js';
 import { createLogger } from './logging.js';
 import { PolicyResolver } from './policy/resolver.js';
+import { PromptRegistry } from './prompts/registry.js';
 import { RateLimiter } from './quota/rate-limiter.js';
 import { SpendTracker } from './quota/spend-cap.js';
+import { SpendRateLimiter } from './quota/spend-rate-limiter.js';
 import { PerTenantKeyResolver } from './tenant-key/resolver.js';
 
 async function main(): Promise<void> {
@@ -95,6 +97,35 @@ async function main(): Promise<void> {
     db: dbHandle.db,
     defaultCapMicrodollars: BigInt(config.SPEND_CAP_MICRODOLLARS),
   });
+  const spendRateLimiter = new SpendRateLimiter({
+    redis,
+    defaultCapMicrodollars: BigInt(config.SPEND_RATE_PER_MINUTE_MICRODOLLARS),
+    logger,
+  });
+
+  // Phase 25 G2.6 — prompt template registry. Loaded from
+  // PROMPTS_DIR when set. Missing directory loads empty (no consumer
+  // yet — Phase 28 internal API lights it up).
+  const promptRegistry = new PromptRegistry();
+  if (config.PROMPTS_DIR !== undefined) {
+    try {
+      await promptRegistry.load(config.PROMPTS_DIR, (msg) =>
+        logger.warn({ prompts_dir: config.PROMPTS_DIR }, msg),
+      );
+      logger.info(
+        { prompts_dir: config.PROMPTS_DIR, loaded: promptRegistry.list().length },
+        'prompt registry loaded',
+      );
+    } catch (err) {
+      logger.warn(
+        {
+          prompts_dir: config.PROMPTS_DIR,
+          error_class: err instanceof Error ? err.name : 'Unknown',
+        },
+        'prompt registry failed to load; serving empty',
+      );
+    }
+  }
 
   const policies = new PolicyResolver(dbHandle.db);
   await policies.ensureLoaded();
@@ -181,6 +212,8 @@ async function main(): Promise<void> {
     anthropicHolder,
     rateLimiter,
     spendTracker,
+    spendRateLimiter,
+    promptRegistry,
     policies,
     zdrEnabled: config.ZDR_ENABLED,
     audit,
