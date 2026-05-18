@@ -261,6 +261,11 @@ export function adminRouter(deps: AdminDeps): Router {
           throw new InvalidRequestError(parsed.error.issues.map((i) => i.message).join('; '));
         }
         const candidate = parsed.data.key.trim();
+        if (candidate.length === 0) {
+          throw new InvalidRequestError(
+            'key is required (whitespace-only payload rejected)',
+          );
+        }
         const probe = deps.probeFn ?? probeAnthropicKey;
         // Probe BEFORE persist. Bad keys must not reach the DB.
         try {
