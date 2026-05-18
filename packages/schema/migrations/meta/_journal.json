@@ -22,6 +22,20 @@
       "when": 1747360800000,
       "tag": "0002_spend_records",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1747526400000,
+      "tag": "0003_appliance_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1747530000000,
+      "tag": "0004_audit_module",
+      "breakpoints": true
     }
   ]
 }

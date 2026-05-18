@@ -1,9 +1,10 @@
 # Vibe Shield — Build Plan
 
 **Repo:** `KisaesDevLab/Vibe-Shield`
-**Role in appliance:** Mandatory egress gateway between Vibe apps and the Anthropic Claude API. All outbound LLM traffic from Vibe apps is routed through Vibe Shield, which performs local PII detection, deterministic tokenization, Claude API proxying, and (policy-controlled) re-identification on the response. Text **and** images.
+**Role in appliance:** Mandatory egress gateway between Vibe apps and the Anthropic Claude API. All outbound LLM traffic from Vibe apps is routed through Vibe Shield, which performs local PII detection, deterministic tokenization, Claude API proxying, and (policy-controlled) re-identification on the response. Text **and** images. Also the standalone web app firm staff use directly to redact documents, scan files for PII, and generate compliance evidence packs.
 **API shape:** Anthropic Messages API, 1:1 compatible. Every Vibe app currently uses `@anthropic-ai/sdk`, so swap-in is a one-line import change. No OpenAI shape in v1.
 **License:** PolyForm Internal Use 1.0.0 (matches MyBooks); commercial license for distribution.
+**Status as of 2026-05-18:** v1.1.5 shipped. Phases 1–9 essentially complete; Phases 10–22 partially shipped; addendum-sourced Phases 23.5–30 are the forward roadmap.
 **Primary references:**
 
 - Memo: *Does Local PII Redaction Before the Claude API Satisfy a CPA's Professional Confidentiality Duties?* (compliance posture this service operationalizes)
@@ -11,6 +12,7 @@
 - FTC Safeguards Rule, 16 C.F.R. Part 314
 - Anthropic Commercial Terms + DPA + ZDR addendum
 - Microsoft Presidio (Analyzer + Anonymizer)
+- `UI-Build-Addendum.md` — folded into this document on 2026-05-18 (see §12). Kept in-tree for traceability.
 
 ---
 
@@ -29,21 +31,23 @@ The build is not "add Presidio and ship." It is the technical implementation of 
 
 ## 2. Stack & architecture
 
-### 2.1 Components
+### 2.1 Components (canonical, 3-service)
 
 | Component | Language | Purpose |
 |-----------|----------|---------|
-| `vibe-shield-gateway` | Node.js 24 + TypeScript + Express | Public API. Anthropic Messages-compatible. Orchestrates redact → Claude → re-identify. |
-| `vibe-shield-engine` | Python 3.12 + FastAPI + Presidio | Internal-only redaction engine. NER, custom recognizers, regex backstops, tokenization. |
-| `vibe-shield-admin` | React 18 + TypeScript + Vite + shadcn/ui | Admin UI: policies, audit log, QA dashboard, recognizer tuning, validation runner. |
+| `vibe-shield-gateway` | Node.js 24 + TypeScript + Express | Public API. Anthropic Messages-compatible. Orchestrates redact → Claude → re-identify. Owns the only outbound path to Anthropic. |
+| `vibe-shield-engine` | Python 3.12 + FastAPI + Presidio | Internal-only redaction engine. NER, custom recognizers, regex backstops, tokenization. Never exposed externally. |
+| `vibe-shield-admin` | React 18 + TypeScript + Vite + shadcn/ui | Admin UI: policies, audit log, QA dashboard, recognizer tuning, validation runner, key management. |
 | `@kisaesdevlab/vibe-shield-client` | TypeScript npm package | Drop-in SDK for Vibe apps. Mirrors `@anthropic-ai/sdk` shape so swaps are one line. |
-| Postgres 16 | — | Token vault, audit log, policy store, QA corpus. Shared Vibe Appliance instance, dedicated schema. |
-| Redis 7 | — | Session token caches, rate limit counters, in-flight request tracking. Shared instance, dedicated DB. |
-| BullMQ | — | Async batch redaction jobs (e.g., MyBooks bulk re-categorization). |
+| Postgres 16 | — | Token vault, audit log, policy store, QA corpus, appliance settings. Shared Vibe Appliance instance, dedicated schema. |
+| Redis 7 | — | Session token caches, rate limit counters, in-flight request tracking. Shared instance, dedicated DB index. |
+| BullMQ | — | Async batch redaction jobs (e.g., MyBooks bulk re-categorization, scheduled scans). |
 
 ### 2.2 Why split Node + Python
 
-Presidio is Python-native and its recognizer ecosystem (spaCy NER, transformers, custom recognizers) is not viable to reimplement in Node. Every other Vibe app is Node, and Kurt's gateway / proxy / streaming / tool-use code is already idiomatic Node. The split keeps Python confined to the one place it earns its keep (the NLP engine) and keeps the public API surface in the same idiom as the rest of the Vibe stack.
+Presidio is Python-native and its recognizer ecosystem (spaCy NER, transformers, custom recognizers) is not viable to reimplement in Node. Every other Vibe app is Node, and the gateway / proxy / streaming / tool-use code is already idiomatic Node. The split keeps Python confined to the one place it earns its keep (the NLP engine) and keeps the public API surface in the same idiom as the rest of the Vibe stack.
+
+The UI-Build-Addendum (§12) proposed collapsing everything into a single Python FastAPI container. **Reviewed and rejected for v1.x.** Reasons: (a) Node gateway code is already shipped and audited; (b) the engine is a separable trust boundary that benefits from being its own container; (c) admin nginx-served SPA is a 74 MB image vs the engine's multi-GB image — keeping them separate makes incremental upgrades faster. The 3-service split is canonical.
 
 ### 2.3 Request flow
 
@@ -88,6 +92,23 @@ Vibe MyBooks ──► vibe-shield-gateway (Node)
 
 Amounts and posting dates are **preserved** by default (transactions are unusable without them); a "strict" policy can also generalize dates to year and bucket amounts.
 
+### 2.5 Product surface (modules)
+
+Three Shield modules, all sharing one auth model, one database, one audit log, and one egress path. Modules are **product groupings that span the existing services; they are not new services.**
+
+| # | Module | What it does | Phase range |
+|---|---|---|---|
+| 1 | **Shield · Redact** | Visual PII redaction on documents (PDF/image/scan) → OCR → Presidio → Claude extraction. Standalone UI + internal API. **Mostly shipped in v1.1.5.** | Phases 1–17 |
+| 2 | **Shield · Scan** | Scan files, folders, spreadsheets, CSVs, email exports (mbox/eml/pst) for unredacted PII. No Claude. Local-only. Reports + bulk redact. | Phase 26 |
+| 3 | **Shield · Compliance** | Vendor inventory, DPA tracking, BAA tracking, WISP builder, evidence pack export, breach-notification matrix. | Phase 27 |
+
+Plus four cross-cutting concerns:
+
+- **Shield · Identity** (auth, users, RBAC) — Phase 24
+- **Shield · Audit** (append-only event log, retention) — Phase 11 (shipped) + Phase 23.5 (module/actor extension)
+- **Shield · Egress** (Anthropic client wrapper, ZDR enforcement, request signing) — Phase 8 (shipped) + Phase 25 (deltas)
+- **Shield · Internal API** (the service surface MyBooks et al. consume) — Phase 28
+
 ---
 
 ## 3. Repository layout
@@ -95,50 +116,71 @@ Amounts and posting dates are **preserved** by default (transactions are unusabl
 ```
 Vibe-Shield/
 ├── CLAUDE.md
-├── BUILD_PLAN.md                    ← this file
+├── BUILD_PLAN.md                    ← this file (canonical)
+├── UI-Build-Addendum.md             ← superseded; kept for traceability
 ├── README.md
 ├── LICENSE                           (PolyForm Internal Use 1.0.0)
+├── CHANGELOG.md
 ├── docker-compose.yml                (local dev)
-├── docker-compose.appliance.yml      (Vibe Appliance variant)
 ├── apps/
 │   ├── gateway/                      Node.js Express service
 │   │   ├── src/
+│   │   │   ├── routes/admin.ts       admin endpoints (X-Admin-Key gated)
 │   │   │   ├── routes/messages.ts    Anthropic-compatible /v1/messages
-│   │   │   ├── routes/admin.ts
-│   │   │   ├── orchestrator/
-│   │   │   ├── anthropic-client/
-│   │   │   ├── policy/
-│   │   │   ├── audit/
-│   │   │   └── token-vault/
+│   │   │   ├── routes/materialize.ts
+│   │   │   ├── routes/openapi.ts
+│   │   │   ├── proxy/orchestrator.ts redact → Claude → re-identify
+│   │   │   ├── anthropic/            client.ts, probe.ts, reprobe.ts
+│   │   │   ├── middleware/
+│   │   │   └── config.ts
 │   │   ├── package.json
 │   │   └── Dockerfile
 │   ├── engine/                       Python FastAPI service
 │   │   ├── app/
 │   │   │   ├── main.py
-│   │   │   ├── recognizers/          Custom CPA recognizers
-│   │   │   ├── backstops/            Regex / deny-list layer
+│   │   │   ├── recognizers/
+│   │   │   ├── backstops/
 │   │   │   ├── tokenizer/
+│   │   │   ├── image/                rasterize → OCR → mask
 │   │   │   └── qa/
 │   │   ├── pyproject.toml
 │   │   └── Dockerfile
-│   └── admin/                        React admin UI
+│   └── admin/                        React admin UI (Vite, nginx-served)
 │       ├── src/
+│       │   ├── api.ts                AdminClient
+│       │   ├── App.tsx
+│       │   └── views/                ApiKeys, Audit, AnthropicProbe,
+│       │                             RecognizerMisses, Policies, LoginGate
 │       ├── package.json
 │       └── Dockerfile
 ├── packages/
 │   ├── client/                       @kisaesdevlab/vibe-shield-client
 │   ├── schema/                       Drizzle schema (shared with gateway)
+│   │   ├── src/schema/               table definitions
+│   │   ├── src/crypto/               kek, dek (AES-256-GCM)
+│   │   ├── src/vault/                api-key-store, audit-logger
+│   │   ├── migrations/
+│   │   └── scripts/                  wipe-vault.ts (secure uninstall)
 │   └── shared-types/
 ├── compliance/
-│   ├── engagement-letter-language.md
+│   ├── encryption.md
+│   ├── recognizers.md
+│   ├── soc2-mapping.md
 │   ├── wisp-section.md
-│   ├── peer-review-faq.md
-│   ├── vendor-due-diligence-binder/
-│   └── soc2-mapping.md
+│   ├── incident-response-runbook.md
+│   ├── integrations/                 mybooks, tb, tax-research, tx-converter
+│   └── vendor-due-diligence-binder/
 ├── qa/
 │   ├── corpus/                       Test PDFs, CSVs, OCR exemplars (synthetic)
 │   ├── recall-precision-suite.py
 │   └── reports/
+├── appliance/                        v1.1.4+ integration kit (operator-facing)
+│   ├── INSTALL.md
+│   ├── docker-compose.fragment.yml
+│   ├── caddy.snippet
+│   └── env.example
+├── .appliance/                       v1.1.5 manifest (appliance-registry metadata)
+│   └── manifest.json
 ├── scripts/
 └── .github/workflows/
 ```
@@ -147,313 +189,245 @@ Vibe-Shield/
 
 ## 4. Phased build plan
 
-Each phase ends with green tests + a doc update. No phase is "complete" without both.
+Each phase ends with green tests + a doc update. No phase is "complete" without both. Phases tagged **[shipped]** are done as of the indicated version. Phases tagged **[partial]** have work landed but more is open. Phases without a tag are still ahead.
 
-### Phase 1 — Repository foundation & tooling
+### Phase 1 — Repository foundation & tooling **[shipped, v1.0.0]**
 
-- [ ] Create `KisaesDevLab/Vibe-Shield` GitHub repo, private
-- [ ] Add `LICENSE` (PolyForm Internal Use 1.0.0)
-- [ ] Add `README.md` with one-paragraph value prop and quickstart
-- [ ] Add `CLAUDE.md` with role, stack, conventions, "never log raw cleartext" rule, kickoff prompt
-- [ ] Configure `pnpm` workspaces; root `package.json` with `apps/*`, `packages/*`
-- [ ] Configure Python `uv` or `poetry` for `apps/engine`
-- [ ] Add `.editorconfig`, `.prettierrc`, `eslint.config.js`, `ruff.toml`
-- [ ] Add `.gitignore` (include `.env*`, `*.pem`, `qa/corpus/real/*` — never commit real client data)
-- [ ] Add `docker-compose.yml` for local dev (gateway, engine, postgres, redis)
-- [ ] Add `Makefile` with `make dev`, `make test`, `make build`, `make verify`
-- [ ] Add `.github/CODEOWNERS`
-- [ ] Add issue templates: bug, recognizer-miss, compliance-question
-- [ ] Add PR template requiring "redaction recall regression run? Y/N"
-- [ ] Verify clean install on a fresh clone in <5 minutes
+pnpm workspaces, uv for Python, Make, docker-compose, lint/format/typecheck, CI matrix, issue + PR templates.
 
-### Phase 2 — Core Python redaction engine (Presidio base)
+### Phase 2 — Core Python redaction engine (Presidio base) **[shipped, v1.0.0]**
 
-- [ ] Scaffold `apps/engine` FastAPI app
-- [ ] Pin `presidio-analyzer`, `presidio-anonymizer`, `spacy`, `transformers`
-- [ ] Download and bundle `en_core_web_lg` spaCy model in Docker image
-- [ ] Implement `POST /analyze` → entity spans
-- [ ] Implement `POST /redact` → tokenized text + span map
-- [ ] Implement `GET /health` with model-load status
-- [ ] Implement `GET /recognizers` listing active recognizers + versions
-- [ ] Add request-size limits (default 256 KB; configurable)
-- [ ] Add structured JSON logging with correlation IDs (never log raw text body)
-- [ ] Add Prometheus `/metrics` endpoint (request count, latency, entity counts by type)
-- [ ] Unit tests: 50+ synthetic fixtures covering each base entity type
-- [ ] Containerize; verify image size <2.5 GB
+`apps/engine` FastAPI app with `/analyze`, `/redact`, `/health`, `/recognizers`. spaCy `en_core_web_lg` bundled. JSON logging with correlation IDs. Prometheus metrics.
 
-### Phase 3 — Custom CPA-domain recognizers
+### Phase 3 — Custom CPA-domain recognizers **[shipped, v1.0.0]**
 
-- [ ] `US_EIN` recognizer: regex `\b\d{2}-\d{7}\b` plus contextual cues ("EIN", "Employer ID", "Federal ID")
-- [ ] `US_BANK_ROUTING` recognizer: 9-digit ABA with checksum validation `(3a+7b+c) mod 10 == 0`
-- [ ] `US_BANK_ACCOUNT` recognizer: 4–17 digit numbers with contextual cues ("Account #", "Acct", "DDA") to avoid false positives on invoice numbers
-- [ ] `ITIN` recognizer: SSN-shaped but starts with 9; specific middle ranges
-- [ ] `DOB` recognizer with year-only generalization option
-- [ ] `DRIVERS_LICENSE` recognizer with per-state pattern table
-- [ ] `BUSINESS_NAME` recognizer tuned for "LLC", "Inc.", "P.C.", "PLLC" suffixes
-- [ ] Amount preservation pass: explicitly **whitelist** currency patterns to avoid accidental redaction
-- [ ] Date preservation pass: whitelist ISO-8601 and common US date formats
-- [ ] Tax-form-number whitelist: "1099-NEC", "W-2", "1040", "1065" are not PII and must pass through unchanged
-- [ ] Unit tests for each recognizer with positive + negative + boundary cases
-- [ ] Document each recognizer in `compliance/recognizers.md` (pattern, source, false positive rate, false negative rate from QA corpus)
+`US_EIN`, `US_BANK_ROUTING` (with ABA checksum), `US_BANK_ACCOUNT`, `ITIN`, `DOB`, `DRIVERS_LICENSE`, `BUSINESS_NAME`, amount/date preservation, tax-form-number whitelist. Docs in `compliance/recognizers.md`.
 
-### Phase 4 — Regex backstop / deny-list layer
+### Phase 4 — Regex backstop / deny-list layer **[shipped, v1.0.0]**
 
-- [ ] Implement a post-Presidio pass that runs **after** NER, catching anything Presidio missed
-- [ ] SSN backstop: `\b(?!000|666|9\d{2})\d{3}[-\s]?(?!00)\d{2}[-\s]?(?!0000)\d{4}\b`
-- [ ] EIN backstop: `\b\d{2}-\d{7}\b` (with prefix validation against IRS-issued ranges)
-- [ ] Routing backstop with checksum
-- [ ] Credit card backstop with Luhn
-- [ ] Email backstop (permissive RFC)
-- [ ] Phone backstop (US: E.164, NANP, formatted variants)
-- [ ] Add **fail-closed**: if backstop finds any high-severity pattern that Presidio missed, log to `audit.recognizer_miss` table
-- [ ] Configurable severity per pattern (block / warn / allow)
-- [ ] Unit tests: 20+ adversarial cases per backstop (obfuscated SSNs, split across lines, OCR-mangled)
+Post-Presidio pass catching SSN/EIN/routing/credit-card/email/phone. Fail-closed for high-severity misses with `vs_recognizer_misses` logging.
 
-### Phase 5 — Token vault schema & encryption
+### Phase 5 — Token vault schema & encryption **[shipped, v1.0.0]**
 
-- [ ] Drizzle schema in `packages/schema`:
-  - `vs_sessions` (id, tenant_id, app_id, user_id, created_at, expires_at, policy_id)
-  - `vs_tokens` (session_id, token, entity_type, cleartext_encrypted, hash, created_at)
-  - `vs_token_index` (session_id, hash, token) for deduping within a session
-  - `vs_policies` (id, name, json_config, version)
-  - `vs_audit` (id, tenant_id, session_id, event_type, payload_hash, created_at)
-  - `vs_recognizer_misses` (id, pattern, sample_hash, severity, created_at)
-- [ ] AES-256-GCM encryption at rest for `cleartext_encrypted` using a per-tenant DEK
-- [ ] Per-tenant DEK wrapped by an appliance-level KEK
-- [ ] KEK stored outside the database (env var sourced from appliance secret manager)
-- [ ] Migration files numbered sequentially; reversible
-- [ ] Cleartext is **never logged**; tests assert this with log scraping
-- [ ] Token expiry / GC job (default 90 days, configurable)
-- [ ] Token vault export tool for legal hold (encrypted export only)
+`vs_sessions`, `vs_tokens`, `vs_token_index`, `vs_policies`, `vs_audit`, `vs_recognizer_misses`, `vs_tenant_keys`, `vs_api_keys`. AES-256-GCM with per-tenant DEK wrapped by appliance KEK. `loadKek()` deletes `process.env.VS_KEK` post-load (v1.1.3 hardening). Token expiry/GC job.
 
-### Phase 6 — Deterministic tokenization & session management
+See `packages/schema/src/crypto/{kek,dek}.ts`, `packages/schema/src/vault/`.
 
-- [ ] Token allocation: within a session, the same cleartext gets the same token (deterministic), but tokens never collide across tenants
-- [ ] Token format `<{ENTITY}_{N}>` where N is per-session, per-entity-type, monotonically allocated
-- [ ] Cross-session: same cleartext gets a **different** token (privacy property — Anthropic cannot correlate sessions)
-- [ ] Session API: `POST /sessions` → session_id; `DELETE /sessions/:id` → purge mapping
-- [ ] Session policy: auto-expire after N minutes idle (default 60)
-- [ ] Session affinity: a single bookkeeping transaction maps to one session so referring entities resolve coherently
-- [ ] Idempotency: re-redacting the same text in the same session returns identical tokens
-- [ ] Tests: 100+ round-trip redact → re-identify cases
+### Phase 6 — Deterministic tokenization & session management **[shipped, v1.0.0]**
 
-### Phase 7 — Node.js gateway service skeleton
+Same-session-same-token determinism; cross-session randomization. Session API, idempotent re-redaction.
 
-- [ ] Scaffold `apps/gateway` Express + TypeScript
-- [ ] `/v1/messages` route shaped exactly like Anthropic's Messages API
-- [ ] Auth: gateway issues its own API keys to Vibe apps (`vs_live_…`); Anthropic key is held only by the gateway and never exposed to apps
-- [ ] Tenant resolution from gateway API key
-- [ ] Policy resolution per tenant + app
-- [ ] Correlation ID propagation
-- [ ] Standard error envelope matching Anthropic's
-- [ ] Structured logging (no payload bodies in logs)
-- [ ] Health + readiness endpoints
-- [ ] OpenAPI spec emitted at `/openapi.json`
+### Phase 7 — Node.js gateway service skeleton **[shipped, v1.0.0]**
 
-### Phase 8 — Anthropic Claude API proxy (incl. streaming & tool use)
+Express + TypeScript. `/v1/messages` route, tenant resolution, correlation IDs, standard error envelope, OpenAPI at `/openapi.json`.
 
-- [ ] Wrap `@anthropic-ai/sdk` server-side
-- [ ] **Consumer-key block**: reject any Anthropic key that is not a commercial API key; verify with a probe request on startup
-- [ ] Inject ZDR-eligible headers when configured
-- [ ] Model registry consulted to confirm the requested model is allowed by the tenant's policy
-- [ ] Streaming: redact request, open SSE to Claude, buffer responses through the re-identification pass, forward to client as SSE
-- [ ] Tool use: redact tool input fields recursively; re-identify tool result fields per policy
-- [ ] System prompt redaction (yes, even system prompts get scrubbed — clients often paste customer context there)
-- [ ] Retry / backoff with jitter
-- [ ] Per-tenant rate limiting in Redis
-- [ ] Per-tenant monthly spend cap (hard cutoff with admin alert)
-- [ ] Tests: golden recordings of streaming + tool-use scenarios
+See `apps/gateway/src/config.ts`, `apps/gateway/src/routes/`.
 
-### Phase 9 — Re-identification & response pipeline
+### Phase 8 — Anthropic Claude API proxy **[shipped, v1.0.0]**
 
-- [ ] Response scanner replaces tokens back to cleartext per policy
-- [ ] Policy options: `full`, `partial` (per-entity-type allowlist), `none` (audit-only)
-- [ ] Per-user permissions: a junior staff role may receive `partial`; partner role `full`
-- [ ] Tokens unknown to the session are passed through unchanged (no hallucinated tokens leak)
-- [ ] Re-identification events are audit-logged separately from request events (peer review wants to see *who* saw what)
-- [ ] Tests: token preservation across nested JSON tool outputs, markdown, code blocks
+Wraps `@anthropic-ai/sdk`. Commercial-key probe on startup (`apps/gateway/src/anthropic/probe.ts`). ZDR header injection. Streaming, tool use, system prompt redaction. Per-tenant rate limit + spend cap. Egress consolidation deltas live in Phase 25.
 
-### Phase 10 — Configuration & policy engine
+### Phase 9 — Re-identification & response pipeline **[shipped, v1.0.0]**
 
-- [ ] Policy JSON schema covering: entity types in-scope, redaction strictness, re-identification rules, allowed models, ZDR required Y/N, max context tokens, allowed apps
-- [ ] Built-in policies: `cpa-bookkeeping-strict`, `cpa-bookkeeping-balanced`, `tax-research`, `internal-only`
-- [ ] Per-tenant override of any built-in policy
-- [ ] Per-app default policy
-- [ ] Versioned policies (any change creates a new version; old versions retained for audit)
-- [ ] Policy diff viewer in admin UI
-- [ ] Tests: policy resolution priority (request → user → app → tenant → built-in)
+Token → cleartext per policy. Tokens unknown to a session pass through unchanged. Re-identification audited separately from request events.
 
-### Phase 11 — Audit logging & compliance records
+### Phase 10 — Configuration & policy engine **[partial]**
 
-- [ ] Every request: tenant, app, user, session, policy version, entities-detected count by type, token count, model, input hash, output hash, latency, ZDR-enabled flag
-- [ ] Every re-identification: user, entities re-identified, justification (optional free text)
-- [ ] Every recognizer miss caught by backstop
-- [ ] Every policy change
-- [ ] Append-only audit table; row-level immutability enforced via trigger
-- [ ] Daily audit digest signed + stored (hash-chained) for tamper evidence
-- [ ] Audit retention configurable (default 7 years to match CPA workpaper retention)
-- [ ] Export to CSV / Parquet for peer review handoff
-- [ ] No raw cleartext ever appears in audit records — hashes only
+`PoliciesView` exists; per-tenant rate limits + spend caps persist; Anthropic re-probe interval configurable. Open: full versioned-policy JSON schema, policy diff viewer, built-in policy presets (`cpa-bookkeeping-strict` etc.) per CLAUDE.md.
 
-### Phase 12 — QA, validation & recall/precision harness
+### Phase 11 — Audit logging & compliance records **[partial]**
 
-- [ ] Synthetic corpus generator using Faker (names, addresses, SSNs in valid-format-but-not-issued ranges, EINs, bank numbers)
-- [ ] Real-world-style fixtures: synthetic bank statements (PDF), invoices, 1099-NEC, W-2, payroll registers, check images
-- [ ] Recall metric: `(true positives) / (true positives + false negatives)` per entity type
-- [ ] Precision metric: `(true positives) / (true positives + false positives)` per entity type
-- [ ] Acceptance thresholds in CI: recall ≥ 0.99 for SSN/EIN/routing; ≥ 0.95 for names/addresses; precision ≥ 0.90 across all
-- [ ] CI gate: pull request fails if recall regresses on the standing corpus
-- [ ] Production sampling: redact 1% of real requests for offline human review (with cleartext kept locally only)
-- [ ] QA dashboard in admin UI showing rolling 30-day recall/precision
-- [ ] Quarterly validation report auto-generated for the WISP binder
+`vs_audit` ships with `event_type` + `payload_hash` + append-only trigger. Open items: add `module` + `actor_type` + `service_name` columns per UI-Build-Addendum §4.6 — **scheduled under Phase 23.5** alongside the admin key feature, since the new audit events for key rotation will need the module field anyway. Daily audit digest is implemented; CSV/Parquet export is open.
 
-### Phase 13 — Admin UI (React)
+### Phase 12 — QA, validation & recall/precision harness **[partial]**
 
-- [ ] Vite + React 18 + TypeScript + shadcn/ui + Tailwind
-- [ ] Auth via firm's existing identity (or local admin password for the appliance)
-- [ ] Dashboard: requests, tokens, recall/precision, top recognizer misses
-- [ ] Policy editor (form + JSON view, versioned)
-- [ ] Recognizer tuning: enable/disable, adjust confidence thresholds, view recent matches
-- [ ] Audit log browser with filtering, export
-- [ ] QA corpus runner: upload a fixture, see redacted output
-- [ ] Validation report viewer + PDF export
-- [ ] Tenant management (multi-tenant ready, even if single-firm at first)
-- [ ] API key management (issue, rotate, revoke)
-- [ ] Anthropic key configuration with "test connection" button verifying commercial-key status
+Text corpus in `qa/`. Recall/precision suite runs in CI. Open: image QA corpus (Phase 17 follow-up), production sampling for offline human review, quarterly auto-generated validation report.
 
-### Phase 14 — TypeScript client SDK
+### Phase 13 — Admin UI (React) **[partial]**
 
-- [ ] `@kisaesdevlab/vibe-shield-client` npm package
-- [ ] API surface matches `@anthropic-ai/sdk` for `messages.create` and `messages.stream`
-- [ ] Drop-in import path swap is the only change a Vibe app should need
-- [ ] Tool use, streaming, system prompts all supported
-- [ ] TypeScript types matched to Anthropic's
-- [ ] Built-in retry / circuit breaker
-- [ ] Telemetry callback for callers to track redaction stats
-- [ ] Internal package; published to GitHub Packages (not npmjs) initially
-- [ ] Versioning tracks gateway API version
-- [ ] Migration guide doc: "swap `@anthropic-ai/sdk` for `@kisaesdevlab/vibe-shield-client` in 3 steps"
+Shipped views: `ApiKeysView` (issue/revoke `vs_live_*` keys), `AuditView`, `AnthropicProbeView` (read-only probe status), `RecognizerMissesView`, `PoliciesView`. Auth via `X-Admin-Key` header (no user/role model yet).
+
+Open follow-ups (carried as separate phases below):
+
+- Anthropic key configuration with "Set / rotate key" form — **Phase 23.5** (was the original Phase 13 bullet)
+- Policy editor with versioned JSON view + diff — feeds Phase 10
+- Recognizer tuning UI — feeds Phase 25 / Phase 12
+- QA corpus runner in-UI — feeds Phase 12
+- Multi-tenant + per-user auth — **Phase 24** (identity v2)
+
+### Phase 14 — TypeScript client SDK **[partial]**
+
+`@kisaesdevlab/vibe-shield-client` scaffolded under `packages/client/` with `messages.create` / `messages.stream` parity. Open: telemetry callback, GitHub Packages publish workflow, migration guide.
 
 ### Phase 15 — Vibe MyBooks integration
 
-- [ ] Replace direct Anthropic SDK calls with `vibe-shield-client` in MyBooks AI categorization flow
-- [ ] Replace in: rules engine LLM helper, confidence-tiered categorizer, transaction memo enrichment, 1099 vendor identification
-- [ ] Validate: categorization quality on a frozen test set before/after redaction (acceptance: ≤2% degradation; expectation: ~0%)
-- [ ] BullMQ batch jobs for end-of-month re-categorization run through gateway
-- [ ] Feature flag in MyBooks: `VIBE_SHIELD_ENABLED=true` (default true on appliance)
-- [ ] Fail-open vs. fail-closed: **fail-closed by default** — if gateway is down, AI features show "AI unavailable" rather than bypassing redaction
-- [ ] Update MyBooks engagement letter template to reference Vibe Shield
-- [ ] MyBooks audit log links to Vibe Shield session IDs for end-to-end traceability
+Integration plan documented at `compliance/integrations/mybooks.md` (commit 31755ed). Open: actually replace direct Anthropic SDK calls in MyBooks. Tracked there; this phase remains open until MyBooks ships against Shield.
 
 ### Phase 16 — Vibe Trial Balance integration
 
-- [ ] Same drop-in pattern as MyBooks
-- [ ] Tax code crosswalk AI suggestions through gateway
-- [ ] Adjusting-entry narrative generation through gateway
-- [ ] Validate: crosswalk match rate unchanged with redaction enabled
-- [ ] MyBooks↔Trial Balance integration unaffected (already REST, no LLM)
+Plan at `compliance/integrations/tb.md`. Tax-code crosswalk + JE narrative routing through gateway. Open.
 
-### Phase 17 — Image redaction pipeline
+### Phase 17 — Image redaction pipeline **[partial]**
 
-Images come from MyBooks receipt PWA, magic-link client portal uploads, GLM-OCR'd PDF pages, and Tax Research document attachments. Same compliance bar: nothing identifiable leaves the appliance.
-
-- [ ] `POST /v1/images/redact` endpoint on gateway (multipart) and `POST /redact-image` on engine
-- [ ] Supported inputs: PNG, JPEG, WebP, single-page PDF rasterized to image, multi-page PDF iterated page-by-page
-- [ ] Engine pipeline per image:
-  - run OCR (call into GLM-OCR if available on appliance, fall back to local Tesseract) with **word-level bounding boxes**
-  - run text Presidio + custom recognizers + regex backstops on the OCR'd text
-  - map every detected entity span back to its bounding box(es)
-  - run face detection (MediaPipe or OpenCV Haar cascade) — masks ID photos, driver's licenses, headshots on engagement docs
-  - run signature heuristic detection (dense-stroke region in lower portion of checks / forms) — flag low-confidence detections for QA
-  - run barcode/QR detection — barcodes on checks and 1099s encode routing/account info; mask by default
-- [ ] Masking strategies (per-policy): solid black-out (default), pixelate, gaussian blur, white-out with token label overlay (`<US_BANK_ACCOUNT_3>` printed in the masked region for human readability)
-- [ ] Return: redacted image bytes + token map + per-region audit record (entity type, bbox, mask strategy, confidence)
-- [ ] Token map is the **same vault** as text — if `<PERSON_2>` appears in both the OCR'd image text and a transaction memo in the same session, it's the same token
-- [ ] Hard rule: if face detection or signature detection fails to load, the request **fails closed** rather than shipping un-masked
-- [ ] Image QA corpus: synthetic checks, synthetic 1099s, synthetic engagement letters with signatures, synthetic receipts with printed names and card-last-4, synthetic driver's-license-style ID photos
-- [ ] Image recall/precision metrics in CI alongside text metrics; thresholds: face recall ≥ 0.98, signature recall ≥ 0.90, OCR-derived PII recall inherits text thresholds
-- [ ] PDF iteration: each page is a separate engine call; tokens carry across pages within one session
-- [ ] Multipart streaming for large PDFs (don't load 200-page docs entirely into memory)
-- [ ] Resource budget: image redaction P95 < 3 seconds per page on NucBox M6
-- [ ] Tests cover: rotated documents, low-DPI scans, handwritten checks, overlapping text and signatures
-- [ ] Admin UI page: drag-and-drop image, see redacted result and bounding box overlay
-- [ ] Document `compliance/image-redaction.md` with detection methods, confidence thresholds, and known limitations
+`POST /v1/images/redact` shipped on the gateway (`apps/gateway/src/proxy/`), engine pipeline in `apps/engine/app/image/`. OCR (GLM-OCR primary, Tesseract fallback), face detection (MediaPipe), signature heuristic, barcode/QR detection. Open: image QA corpus, P95 < 3s on NucBox M6 acceptance test, admin drag-and-drop UI.
 
 ### Phase 18 — Vibe Tax Research Chat & GLM-OCR integration
 
-- [ ] Tax Research Chat: all Claude calls routed through gateway; "balanced" or "research" policy (less PII typically, but client-specific questions still get scrubbed)
-- [ ] Citation engine output passed through re-identification safely (citations contain no PII so should be untouched — verify)
-- [ ] GLM-OCR: OCR runs locally as before, but any post-OCR Claude-based analysis (document classification, line-item extraction) routes through gateway
-- [ ] GLM-OCR ↔ Vibe Shield image pipeline integration: GLM-OCR can call Shield's image endpoint to get a redacted copy + token map in one round trip, then ship the redacted image to Claude for visual analysis
-- [ ] Acceptance test: a synthetic bank-statement PDF goes through GLM-OCR → gateway → Claude → MyBooks categorization with zero PII visible in the gateway's outbound payload to Anthropic — both text and any embedded check images
+Plans at `compliance/integrations/tax-research.md` and `compliance/integrations/tx-converter.md`. Open.
 
-### Phase 19 — Observability, metrics & performance
+### Phase 19 — Observability, metrics & performance **[partial]**
 
-- [ ] Prometheus metrics exposed by gateway and engine
-- [ ] Grafana dashboard JSON in `ops/dashboards/`
-- [ ] Key SLOs: redact P50 < 150 ms for 4 KB input, P99 < 600 ms; gateway round-trip overhead < 250 ms excluding Anthropic latency
-- [ ] Load test scripts (k6) for baseline + 10× peak
-- [ ] Resource budget on NucBox M6 (32 GB): engine ≤ 4 GB resident, gateway ≤ 512 MB
-- [ ] Cold-start optimization for engine (model preload at boot, not at first request)
-- [ ] Circuit breaker around Anthropic API
-- [ ] Graceful shutdown drains in-flight requests
-- [ ] Backpressure: 429 with Retry-After when overloaded
+Health/ready endpoints shipped; Prometheus metrics shipped. Open: Grafana dashboards in `ops/dashboards/`, k6 load test scripts, circuit breaker tuning.
 
-### Phase 20 — CI/CD & GHCR publishing
+### Phase 20 — CI/CD & GHCR publishing **[shipped, v1.1.4]**
 
-- [ ] GitHub Actions: lint, typecheck, unit tests, recall/precision suite, build images
-- [ ] Multi-arch images: `linux/amd64` (NucBox), `linux/arm64` (Pi 5 future)
-- [ ] Image signing (cosign)
-- [ ] SBOM generation (syft) attached to releases
-- [ ] Trivy scan, fail on HIGH/CRITICAL
-- [ ] Semantic versioning; release-please for changelogs
-- [ ] GHCR publish on tag, with `latest`, `vX.Y.Z`, `vX.Y`, `vX` tags
-- [ ] Renovate bot for dependency updates with required CI
+Multi-arch images (amd64/arm64), GitHub Actions release workflow, GHCR publish. Cosign signing + SBOM + Trivy are open as v1.2 hardening.
 
-### Phase 21 — Vibe Appliance manifest integration
+### Phase 21 — Vibe Appliance manifest integration **[shipped, v1.1.5]**
 
-- [ ] Add `vibe-shield` service to Vibe Appliance manifest (gateway, engine, admin — three containers)
-- [ ] Caddy routes:
-  - `shield.<domain>` → admin UI
-  - `gateway.shield.<domain>` → gateway API (Tailscale-only by default)
-  - Engine never exposed externally; internal Docker network only
-- [ ] Shared Postgres: dedicated schema `vibe_shield`; migration runs on appliance bootstrap
-- [ ] Shared Redis: dedicated DB index for Vibe Shield
-- [ ] Environment inheritance: `ANTHROPIC_API_KEY`, `VS_KEK`, tenant config
-- [ ] Health checks wired into appliance status page
-- [ ] Three deployment modes (domain / LAN / Tailscale) all tested
-- [ ] **Other Vibe apps reconfigured** to point at `http://vibe-shield-gateway:8080` internally; appliance manifest enforces this on install
-- [ ] Vibe Appliance installer flow: prompt for Anthropic key, verify commercial-key status, confirm ZDR opt-in
-- [ ] Uninstall flow: secure wipe of token vault
+`appliance/` integration kit (docker-compose fragment, Caddy snippet, env.example, INSTALL.md) plus `.appliance/manifest.json` for the appliance registry. Auto-migrations gated by `MIGRATIONS_AUTO`. Three deployment modes (domain / LAN / Tailscale) supported.
 
-### Phase 22 — Compliance documentation & templates
+### Phase 22 — Compliance documentation & templates **[partial]**
 
-- [ ] `compliance/engagement-letter-language.md`: drop-in paragraphs covering AI use, third-party processor identification, local redaction, client consent
-- [ ] `compliance/wisp-section.md`: WISP language describing Vibe Shield's role for the Safeguards Rule §314.4 controls
-- [ ] `compliance/peer-review-faq.md`: 15 questions a peer reviewer will ask, with answers and where to find the supporting artifact
-- [ ] `compliance/vendor-due-diligence-binder/`:
-  - `anthropic-commercial-terms.pdf` (latest snapshot)
-  - `anthropic-dpa.pdf`
-  - `anthropic-zdr-addendum.pdf`
-  - `anthropic-trust-center-snapshot.pdf` (with date)
-  - `kisaesdevlab-confidentiality-commitment.md`
-  - `presidio-license-mit.md`
-- [ ] `compliance/soc2-mapping.md`: control-by-control mapping of how Vibe Shield supports each SOC 2 Trust Service Criterion the firm relies on
-- [ ] `compliance/incident-response-runbook.md`
-- [ ] `compliance/annual-review-checklist.md` (Anthropic Trust Center re-check, recall/precision recertification, KEK rotation)
-- [ ] Auto-generated quarterly validation report template
+Shipped in `compliance/`: `encryption.md`, `recognizers.md`, `soc2-mapping.md`, `wisp-section.md`, `incident-response-runbook.md`, `vendor-due-diligence-binder/`, `integrations/`. Open: engagement letter templates, peer review FAQ, annual review checklist, auto-generated quarterly validation report template (feeds Phase 12).
 
 ### Phase 23 — Beta rollout & production hardening
 
-- [ ] Pre-prod checklist: secrets in env (no checked-in keys), ZDR verified, audit retention set, KEK backed up off-host
-- [ ] One firm in beta (Kurt's own practice) for 30 days
-- [ ] Daily review of `vs_recognizer_misses` table during beta
-- [ ] Tune recognizers based on beta findings; bump recall thresholds if exceeded
-- [ ] Incident response drill (simulated breach notification)
-- [ ] Backup/restore tested for Postgres token vault (encrypted backups only)
-- [ ] KEK rotation procedure documented and rehearsed
-- [ ] Annual penetration test scoped (external to this plan but referenced)
-- [ ] v1.0.0 tag + GHCR publish + Vibe Appliance manifest bump
+Pre-prod checklist, beta-firm review of `vs_recognizer_misses`, KEK rotation rehearsal, backup/restore drill, incident response drill, v1.0.0 tag. Open as the cumulative gate before declaring v1.0.0 GA.
+
+---
+
+### Phase 23.5 — Admin Anthropic-key management + audit module-tagging *(near-term, this is the work in flight)*
+
+**Purpose:** Let an operator paste, validate, and rotate the Anthropic commercial API key from the admin UI. Today the gateway reads `ANTHROPIC_API_KEY` from env at boot only; rotating requires an appliance redeploy. This phase makes the key editable while preserving the env-backed bootstrap path. Also extends `vs_audit` with the `module` / `actor_type` / `service_name` columns the addendum's §4.6 requires for the modules planned below.
+
+**Items:**
+
+- New table `vs_appliance_settings` (singleton row, AES-256-GCM ciphertext under the appliance KEK)
+- New helper `packages/schema/src/vault/appliance-secret-store.ts` (set/get/clear with AAD `vs:appliance:anthropic_key`)
+- `vs_audit` migration: add `module text`, `actor_type text default 'user'`, `service_name text nullable`; backfill existing rows
+- `audit-logger.ts` accepts `module` (required going forward) + optional actor metadata; new event types `anthropic_key_set`, `anthropic_key_cleared`
+- Gateway config refactor: `getEffectiveAnthropicKey()` prefers DB → falls back to env → throws
+- `AnthropicClientHolder` wraps the SDK client with atomic `reload(newKey)`; orchestrator + materialize callers go through `getClient()` per-request
+- `GET / PUT / DELETE /v1/admin/anthropic/key` — admin-key gated; PUT probes before persisting; DELETE refuses if env is also unset (no fallback)
+- `AnthropicProbeView` extended with status badge, "Set / rotate key" textarea form, and "Revert to env-backed key" button; textarea cleared on success
+- Tests: bad-key rejection, good-key persist+reload, audit-row fingerprint (no plaintext), env fallback after revert, restart durability
+- Docs: `CHANGELOG.md`, one-line note in `appliance/INSTALL.md`
+
+`.appliance/manifest.json` continues to declare `ANTHROPIC_API_KEY` as required — the admin-set key is an override, not a replacement for the bootstrap path.
+
+---
+
+### Phase 24 — [addendum B/C] Identity v2: users + magic-link auth + per-module RBAC
+
+The current admin model is a single `GATEWAY_ADMIN_KEY` header. Modules 2 + 3 and several of the future operator workflows need a real user model. Per-module RBAC replaces the single admin bit.
+
+**Items:**
+
+- `users` table (id, email, is_org_admin bool, created_at, last_login_at)
+- `user_sessions` table (magic-link consumed → session token with TTL)
+- `user_roles` table (user_id, module enum('redact','scan','compliance'), role enum('viewer','operator','admin')); unique on `(user_id, module)`
+- Magic-link flow: `POST /api/auth/request-link` → SMTP → `GET /api/auth/consume?token=…` → session cookie
+- `requires(module, min_role)` middleware replaces the single admin gate; `adminAuthMiddleware` becomes a thin compatibility wrapper for the legacy `X-Admin-Key` path during migration
+- Bootstrap admin: first install creates one `is_org_admin=true` user with `admin` role in every module
+- Admin UI gains a Users page (org_admin only); LoginGate switches from key paste to magic-link request
+- Audit events `user.created`, `user.role_changed`, `user.magic_link_requested`, `user.magic_link_consumed`
+- Tests: role matrix enforcement at each `/v1/*` endpoint, magic-link expiry, bootstrap idempotence
+
+This is a prerequisite for Phases 26 + 27 because both rely on per-module roles. Phase 23.5's `X-Admin-Key` model continues to work in parallel until Phase 24 lands.
+
+---
+
+### Phase 25 — [addendum G2] Egress wrapper consolidation deltas
+
+The gateway is already the only path to Anthropic. Three open items strengthen that property:
+
+**Items:**
+
+- **G2.6** Versioned prompt template registry: markdown files under `apps/gateway/src/prompts/` keyed by `prompt_id`; the wrapper records the template SHA in the audit row for every Claude call (so a future review can prove which prompt produced which extraction)
+- **G2.8** Redis-backed leaky-bucket spend rate-limit per tenant per minute (current implementation is a flat per-minute cap); soft warning at 80%, hard cap at 100% queues calls
+- **G2.9** Boundary test: `import 'anthropic'` is allowed only from `apps/gateway/src/anthropic/`. Add an ESLint `no-restricted-imports` rule + a CI grep check that walks `apps/` and fails on offending imports. Catches a future regression where a new feature short-circuits the wrapper.
+
+Small phase; can ship before Phase 24.
+
+---
+
+### Phase 26 — [addendum R–V] Module 2: Shield · Scan
+
+Point Shield at a directory, archive, spreadsheet, mbox, etc. and get back a report of every file containing unredacted PII; optionally bulk-redact in place.
+
+**Scope (full addendum letters R–V):**
+
+- **R** Scanner engine: `Scanner` ABC with concrete `PdfTextScanner`, `ImagePdfScanner`, `ImageScanner`, `PlainTextScanner`, `OfficeDocScanner`, `ArchiveScanner` (zip/7z/tar.gz, depth + size limits). Lives in `apps/engine/app/scan/`. Per-file 60s timeout, 250 MB memory budget, 100 MB default size cap. Custom recognizers from Redact reused via single config in `app/pii/recognizers.py`.
+- **S** Spreadsheet + CSV + email scanners: `openpyxl`/`odfpy` for xlsx/ods, `xlrd<2` for legacy xls (flag-gated), streaming CSV (≤5 GB), `eml`/`mbox` via stdlib, `pst` flag-gated behind `libpff-python`. Header detection for column names; suppression rules for accountant-friendly false positives.
+- **T** Scan job model: `scan_jobs`, `scan_findings` (partial index on severity), `scan_files` (dedupe). Bulk-redact endpoint that enqueues normal Redact jobs linked back. "Redact in place" gated to org_admin. CSV export of findings. Audit events for start/complete/cancel/bulk-redact/suppress.
+- **U** Scan SPA: `/scan` landing, path-scan flow, archive-scan dropzone, SSE progress reuse, filterable results table with drill-in side panel, bulk-select, suppression UX with audit, compare-runs view.
+- **V** Scheduled scans: `scheduled_scans` table, arq cron, SMTP alerts on new high-severity findings, webhook delivery with HMAC, pause/run-now controls.
+
+**Acceptance:** ≥95% recall against a fixture corpus of mixed PDFs/DOCX/XLSX (addendum §20).
+
+**Depends on:** Phase 24 (RBAC per-module), Phase 11+23.5 (audit module field).
+
+---
+
+### Phase 27 — [addendum W–AA] Module 3: Shield · Compliance
+
+Vendor inventory, DPA/BAA tracking, WISP builder, evidence pack export, breach notification matrix, compliance hub SPA.
+
+**Scope (full addendum letters W–AA):**
+
+- **W** Vendor inventory: `vendors`, `vendor_agreements`, `vendor_assessments`, `vendor_incidents`. Pre-seeded templates for the obvious players (Anthropic, AWS, Google Workspace, Microsoft 365, Intuit, Bill.com, etc.). Anthropic vendor auto-created on first boot with ZDR flag captured from the egress healthcheck. Renewals dashboard (60d / 30d / 14d colour bands).
+- **X** WISP builder: `wisps`, `wisp_sections`, `wisp_section_revisions`. Pub-4557/5708/§314.4 aligned section catalog. Per-section "Suggested content" panel autogenerated from what Shield knows (vendor list, scans, audit, ZDR posture). Version control: approve snapshots all sections; further edits create v2. Completeness indicator; multi-author lock; starter templates.
+- **Y** Evidence Pack export: one-click ZIP with WISP PDF, vendor inventory CSV, agreements summary + attachments, audit CSV (bbox hashes only), validation tests, egress call log, scan summary, high-severity findings, redact monthly volume, fail-closed events, README. HMAC-signed manifest; deterministic regeneration; 90d retention; bundled `scripts/verify_evidence_pack.py`. **The marketing moment.**
+- **Z** Breach notification matrix: `breach_jurisdictions` (50 states + DC + PR, statute windows, AG thresholds), `firm_states_in_practice`, auto-generated per-state deadline grid from a `breaches` row, statute templates. Annual upstream JSON manifest check.
+- **AA** Compliance SPA: tile dashboard, vendor list + detail tabs, WISP two-pane editor with version timeline, evidence-pack wizard with SSE progress, breach form, top-nav health badge, print stylesheet.
+
+**Acceptance:** addendum §21 — generate a non-empty evidence pack out of the box; WISP approval requires every section green; per-state deadline grid renders correctly for a multi-state synthetic breach.
+
+**Depends on:** Phase 24, Phase 23.5.
+
+---
+
+### Phase 28 — [addendum AB–AC] Internal service API + MyBooks SDK migration
+
+Let MyBooks (and later TB, Tax Research, TX Converter) hand documents to Shield over the local Docker network without ever holding an Anthropic API key.
+
+**Scope:**
+
+- **AB.1–3** `/v1/internal/*` route group. `X-Shield-Service-Key` header (issued from a service-key admin endpoint, extending the existing `ApiKeysView` pattern), scoped per service (`mybooks`, `trial-balance`, …). Endpoints: `POST /redact/sync`, `POST /redact/async`, `GET /redact/jobs/<id>`, `POST /scan/text`, `POST /scan/file`. Health endpoint `/api/internal/health` reports `{ shield_version, zdr_enabled, anthropic_reachable, queue_depth }`.
+- **AB.4** Service-attribution: every internal call writes `audit_events.actor_type='service'`, `service_name=<from key>` (requires Phase 23.5 audit columns).
+- **AB.5–10** Per-key rate limiting, HMAC-signed webhooks, schema versioning header, cost attribution per service, graceful degradation when Anthropic is unreachable, redaction-only mode bypass, service-supplied prompt templates (Shield owns the model registry).
+- **AB.13** OpenAPI 3.1 spec; SDK auto-generated.
+- **AC** `@kisaesdevlab/vibe-shield-client` extended for the internal API; MyBooks codepath migration documented at `compliance/integrations/mybooks.md`. Compatibility flag `VIBE_MYBOOKS_USE_SHIELD=true` for the cutover window.
+
+**Depends on:** Phase 24 (service-key issuance audited under a user actor), Phase 23.5 (audit columns).
+
+---
+
+### Phase 29 — [addendum AD] Licensing portal hooks
+
+PolyForm Internal Use 1.0.0 + commercial tiers. Free (Redact only, single user) / Practice (all modules, ≤5 users, ≤50 vendors, schedules) / Firm (unlimited + internal API + webhooks).
+
+**Scope:**
+
+- License check at startup against `kisaes-license-portal` (same service MyBooks uses)
+- Module 2/3 tiles visible-but-locked on Free with "Practice tier required" pill
+- Internal service API returns 402 below Firm tier
+- 14-day grace period before locking; Module 1 keeps working as a safety floor
+- License-required features tagged in OpenAPI so the SDK fails closed with a clean error
+
+---
+
+### Phase 30 — [addendum AE] Release packaging, upgrade, smoke matrix
+
+Largely already covered by Phase 20/21 — what's actually open:
+
+- **AE.3** CI smoke matrix: bring up the image, run redact + scan + WISP-generate + evidence-pack + internal-API smoke, verify the audit log captured every action
+- **AE.4** `shield-backup` / `shield-restore` shell scripts: pg_dump + tar of data dir + redacted-env into a single encrypted tarball
+- **AE.5** Version-tagged data-directory migrations under `app/migrations/data/`
+- **AE.6** `/admin/system` health dashboard (queue depth, recent egress latency, last validation pass, license tier, Anthropic reachability, disk usage per module)
+- **AE.7** Telemetry opt-in (off by default; anonymous aggregates only)
+- **AE.9** End-user docs site (operations guide, security architecture page for sales prospects)
 
 ---
 
@@ -461,10 +435,10 @@ Images come from MyBooks receipt PWA, magic-link client portal uploads, GLM-OCR'
 
 | App | LLM use today | Change required |
 |-----|---------------|-----------------|
-| **Vibe MyBooks** | Confidence-tiered categorization, rules engine, 1099 vendor ID | Swap `@anthropic-ai/sdk` → `@kisaesdevlab/vibe-shield-client`, point at gateway URL |
-| **Vibe Trial Balance** | Tax code crosswalk suggestions, JE narrative | Same swap |
-| **Vibe Tax Research Chat** | Core product (Claude + skills pack) | Same swap, "tax-research" policy |
-| **Vibe GLM-OCR** | OCR is local; post-OCR analysis (if any) calls Claude | Route analysis calls through gateway |
+| **Vibe MyBooks** | Confidence-tiered categorization, rules engine, 1099 vendor ID | Swap `@anthropic-ai/sdk` → `@kisaesdevlab/vibe-shield-client`, point at gateway URL (Phase 15, 28) |
+| **Vibe Trial Balance** | Tax code crosswalk suggestions, JE narrative | Same swap (Phase 16) |
+| **Vibe Tax Research Chat** | Core product (Claude + skills pack) | Same swap, "tax-research" policy (Phase 18) |
+| **Vibe GLM-OCR / TX Converter** | OCR is local; post-OCR analysis calls Claude | Route analysis calls through gateway (Phase 18) |
 | **Vibe Payroll Time** | No LLM calls today | No change unless AI features added |
 | **Vibe Connect** | E2EE messaging; no LLM today | No change unless AI assist added |
 
@@ -492,7 +466,7 @@ Stack: Node.js 24 + TypeScript (gateway), Python 3.12 + FastAPI + Presidio
 (engine), React 18 + Vite (admin), Postgres 16, Redis 7. PolyForm Internal
 Use 1.0.0 license. Multi-arch GHCR images. Integrates with Vibe Appliance.
 
-Start with Phase 1 of BUILD_PLAN.md. After each phase, run `make verify`,
+Pick a phase from BUILD_PLAN.md §4. After each phase, run `make verify`,
 update CHANGELOG.md, and open a PR.
 ```
 
@@ -505,7 +479,7 @@ update CHANGELOG.md, and open a PR.
 | Presidio recall miss on financial documents | Medium | High | Custom recognizers + regex backstops + sampled human review + CI recall gate |
 | OCR-mangled text defeats NER | Medium | High | Backstops use loose-match patterns; QA corpus includes mangled fixtures |
 | Quasi-identifier re-id via amount+date+merchant | Low | Medium | ZDR; strict policy can bucket amounts and generalize dates |
-| Consumer-key misuse by misconfiguration | Low | High | Startup probe blocks; admin UI shows red banner if commercial status unverified |
+| Consumer-key misuse by misconfiguration | Low | High | Startup probe blocks; admin UI shows source + fingerprint + last probe |
 | Token vault breach exposing mappings | Low | High | AES-256-GCM per-tenant DEK; KEK off-host; encrypted backups only |
 | Anthropic policy drift (retention, training) | Medium | Medium | Annual Trust Center review baked into compliance checklist |
 | KisaesDevLab support access leaking data | Low | High | Vendor confidentiality commitment in binder; support access via Tailscale only with audit |
@@ -514,16 +488,26 @@ update CHANGELOG.md, and open a PR.
 | Engagement-letter consent not obtained | Medium | High | Template ships in compliance/; MyBooks onboarding flow surfaces it |
 | Face/signature detection misses identifying mark on a check or ID | Medium | High | Multiple detectors (MediaPipe + Haar + signature heuristic); fail-closed if any detector fails to load; image QA corpus in CI |
 | OCR returns no bounding boxes → image PII can't be mapped to regions | Low | High | Two OCR backends (GLM-OCR primary, Tesseract fallback); image is rejected (fail-closed) rather than shipped unredacted if both fail |
+| Admin-set Anthropic key persisted unencrypted via misconfig | Low | High | KEK required at gateway boot; appliance-secret-store throws if `loadKek()` returns null; AAD binding prevents cross-purpose key misuse |
+| Phase 24 RBAC rollout breaks existing `X-Admin-Key` operators | Medium | Medium | Legacy header path kept as compatibility wrapper until Phase 26/27 require user actors |
 
 ---
 
-## 8. Out of scope for v1
+## 8. Out of scope for v1–v2.5
 
-- **Non-English NER**. v1 is en_US. Spanish/French add-ons in v1.5.
-- **Cloud deployment mode**. Vibe Shield is self-hosted only in v1. Multi-tenant SaaS is a separate product decision.
-- **Connectors to other LLM providers**. Anthropic only in v1. OpenAI/Google/Mistral are v1.5 candidates and would require a separate compliance memo.
+Explicit deferrals (per UI-Build-Addendum §24, retained verbatim):
+
+- **Multi-tenant Shield** (one appliance serving multiple firms). One-firm-per-appliance is a security feature, not a limitation.
+- **OIDC / SAML SSO**. Magic-link plus per-user passkeys in Phase 24; SSO is potentially v3.
+- **A "Shield Cloud" hosted offering**. If it ever happens, separate codebase + separate compliance memo.
+- **AI-assisted WISP drafting via Claude**. Tempting but adds an Anthropic dependency to the Compliance module; v3 evaluation only after the egress wrapper has 12 months of audit history.
+- **Localization beyond English**. v1.5 candidate.
+- **Native iOS / Android Shield app**. Web UI is mobile-friendly; native is a separate addendum if firms ask.
+- **Connectors to other LLM providers** (OpenAI / Google / Mistral). v1.5 candidate; each provider needs its own compliance memo.
 - **Real-time human-in-the-loop review** of high-risk redactions. Sampled post-hoc review only.
 - **Live video / audio redaction**. Static images and rasterized PDF pages only.
+
+Each deferral is intentional: the v1 → v2.5 scope is already ~370 items.
 
 ---
 
@@ -539,20 +523,82 @@ update CHANGELOG.md, and open a PR.
 
 ---
 
-## 10. Acceptance criteria for v1.0.0
+## 10. Acceptance criteria
+
+### 10.1 v1.0.0 (Module 1 + cross-cutting, mostly shipped)
 
 A reasonable peer reviewer, opening the vendor due diligence binder and walking through 10 sample requests in the audit log, can answer "yes" to each of the following:
 
-1. The Anthropic API key in use is verifiably a commercial key.
-2. The DPA and ZDR addendum are signed and on file.
-3. No raw cleartext PII appears in any sampled request payload sent to Anthropic.
-4. The token vault is encrypted at rest with documented key management.
-5. The recall/precision report from the last quarter shows acceptance thresholds met.
-6. The engagement letters of sampled clients contain the AI disclosure paragraph.
-7. The WISP references Vibe Shield with the correct service role.
-8. An incident response procedure exists and has been rehearsed in the last 12 months.
-9. Annual Anthropic Trust Center review is documented within the last 12 months.
-10. Audit logs are append-only and tamper-evident.
-11. Sampled image uploads (checks, IDs, signed engagement docs) show faces, signatures, and PII text regions masked before being sent to Anthropic.
+1. The Anthropic API key in use is verifiably a commercial key. *(Phase 8, plus Phase 23.5 for admin rotation)*
+2. The DPA and ZDR addendum are signed and on file. *(Phase 22)*
+3. No raw cleartext PII appears in any sampled request payload sent to Anthropic. *(Phase 5/6/8)*
+4. The token vault is encrypted at rest with documented key management. *(Phase 5)*
+5. The recall/precision report from the last quarter shows acceptance thresholds met. *(Phase 12)*
+6. The engagement letters of sampled clients contain the AI disclosure paragraph. *(Phase 22)*
+7. The WISP references Vibe Shield with the correct service role. *(Phase 22, then Phase 27)*
+8. An incident response procedure exists and has been rehearsed in the last 12 months. *(Phase 22, Phase 23)*
+9. Annual Anthropic Trust Center review is documented within the last 12 months. *(Phase 22)*
+10. Audit logs are append-only and tamper-evident. *(Phase 11)*
+11. Sampled image uploads (checks, IDs, signed engagement docs) show faces, signatures, and PII text regions masked before being sent to Anthropic. *(Phase 17)*
 
-That is the bar. Build to it.
+A reviewer installing Shield on a 4 vCPU / 8 GB box and visiting `https://shield.firm.example/` should also be able to:
+
+12. Sign in via the admin key (legacy) or magic link (Phase 24); see the admin SPA. *(Phase 13, Phase 24)*
+13. Drop a sample 2-page bank statement; watch it complete in under 20s; download MD/JSON/PDF/ZIP. *(Phase 17)*
+14. Confirm in admin → audit that every step is logged, including a row for the egress call to Anthropic with `request_id`, model, prompt SHA, and token counts. *(Phase 11, Phase 25)*
+15. Generate a Service Key for a fake `mybooks` service, call `/v1/internal/redact/sync` from `curl`, see the audit event tagged `actor_type=service`, `service_name=mybooks`. *(Phase 28; depends on Phase 23.5)*
+16. Find no plaintext copy of the original source PDF anywhere on disk outside the encrypted `source.<ext>` file. *(Phase 5)*
+17. Run the smoke matrix from `scripts/smoke.sh` and have it pass green. *(Phase 30)*
+
+### 10.2 v1.5 (Module 2 — Scan)
+
+18. Point Shield at a fixture archive of mixed PDFs/DOCX/XLSX; receive a findings report with ≥95% recall against the known-PII corpus. *(Phase 26)*
+19. Bulk-redact 10 flagged files; each produces a normal Redact job linked back to the parent scan. *(Phase 26)*
+20. Schedule a daily scan of `/srv/client-files`; confirm it runs and emails on findings. *(Phase 26)*
+
+### 10.3 v2 (Module 3 — Compliance)
+
+21. Add Anthropic to the vendor inventory with a current DPA attachment and a "review due" date 60 days from now. *(Phase 27)*
+22. Build a WISP using the section catalog; approve v1; see audit events for every section edit. *(Phase 27)*
+23. Generate an evidence pack; verify it with the bundled verifier script; confirm the WISP PDF, audit CSV, vendor list, and Anthropic egress log are inside. *(Phase 27)*
+24. Log a fake breach affecting CA + MA residents; see the per-state deadline grid render with correct windows. *(Phase 27)*
+
+### 10.4 v2.5 (Internal API + Licensing + Packaging)
+
+25. Install MyBooks v(next) alongside Shield; confirm MyBooks no longer has `ANTHROPIC_API_KEY` set and that every MyBooks AI feature routes through Shield's internal API. *(Phase 15, Phase 28)*
+26. Take Shield offline; confirm MyBooks gracefully degrades AI features and surfaces the outage in its UI. *(Phase 28)*
+27. Downgrade the license to Free; confirm Module 2 and 3 lock cleanly and Module 1 keeps working. *(Phase 29)*
+
+---
+
+## 11. Appendix — Naming history
+
+The UI-Build-Addendum (§4.1) documents a rename from a prior `vibe-ocr` working name. As of v1.1.5 the repo is fully aligned with the `vibe-shield` name; this table is retained so historical references in tickets and commits are interpretable.
+
+| Prior (vibe-ocr) | Current (vibe-shield) |
+|---|---|
+| `services/vibe-ocr/` | `apps/` (split into `apps/gateway/`, `apps/engine/`, `apps/admin/`) |
+| Docker image `kisaes/vibe-ocr:1.0` | `ghcr.io/kisaesdevlab/vibe-shield-{gateway,engine,admin}:vX.Y.Z` |
+| Container hostname `vibe-ocr` | `vibe-shield-{gateway,engine,admin}` |
+| `VIBE_OCR_*` env vars | `VIBE_SHIELD_*` env vars (also `ANTHROPIC_API_KEY`, `VS_KEK`, `GATEWAY_ADMIN_KEY` for cross-service shared values) |
+| Database `vibe_ocr` | `vibe_shield` |
+| Data volume `/var/lib/vibe-ocr` | `/var/lib/vibe-shield/{redact,scan,compliance}` |
+| Compose volume `vibe-ocr-data` | `vibe-shield-data` |
+| Redis DB index `3` | `5` (and `6` reserved for Scan/Compliance queues) |
+| Page title "Vibe OCR" | "Vibe Shield" |
+| `is_admin` single bit | `is_org_admin` + per-module `user_roles` (Phase 24) |
+
+---
+
+## 12. Superseded source documents
+
+- **`UI-Build-Addendum.md`** — folded into this document on 2026-05-18. The addendum's content is integrated into:
+  - §2.5 (product surface / modules)
+  - Phases 23.5 (audit module field) and 24–30 (the addendum letters B/C, G2, R–V, W–AA, AB–AC, AD, AE)
+  - §8 (out-of-scope deferrals)
+  - §10.2 / §10.3 / §10.4 (acceptance criteria for Modules 2, 3, and the internal API + licensing)
+  - This appendix (naming history)
+
+  The addendum's §2 single-FastAPI-container architecture is **not adopted** — the 3-service split (Node gateway + Python engine + React admin) shipping as of v1.1.5 is canonical. See §2.2 for the reconciliation.
+
+- **`vibe-ocr-ui-addendum.md`** — never in this repo; was the prior name for `UI-Build-Addendum.md` per its own §23. Documented here only so historical references resolve.

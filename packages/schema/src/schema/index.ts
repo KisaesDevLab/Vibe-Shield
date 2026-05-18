@@ -7,3 +7,4 @@ export * from './recognizer-misses.js';
 export * from './tenant-keys.js';
 export * from './api-keys.js';
 export * from './spend-records.js';
+export * from './appliance-settings.js';

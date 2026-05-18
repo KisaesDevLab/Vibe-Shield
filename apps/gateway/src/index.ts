@@ -12,10 +12,10 @@
  * Any of 1-3 raises and the process exits before listening.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { Redis } from 'ioredis';
 import {
   ApiKeyStore,
+  ApplianceSecretStore,
   AuditLogger,
   RecognizerMissStore,
   SessionManager,
@@ -23,7 +23,7 @@ import {
   createDatabase,
   loadKek,
 } from '@kisaesdevlab/vibe-shield-schema';
-import { createAnthropicClient } from './anthropic/client.js';
+import { AnthropicClientHolder } from './anthropic/holder.js';
 import { probeAnthropicKey } from './anthropic/probe.js';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
@@ -42,21 +42,39 @@ async function main(): Promise<void> {
   const kek = loadKek();
   logger.info({ kek_status: 'loaded' }, 'kek loaded');
 
-  const probe = await probeAnthropicKey({ apiKey: config.ANTHROPIC_API_KEY });
+  const dbHandle = createDatabase(config.DATABASE_URL);
+  const applianceSecrets = new ApplianceSecretStore(dbHandle.db, kek);
+
+  // Phase 23.5: the operator-set Anthropic key in vs_appliance_settings
+  // takes precedence over ANTHROPIC_API_KEY in env. Env remains the
+  // bootstrap fallback for fresh installs where the operator hasn't yet
+  // touched the admin UI.
+  const dbKey = await applianceSecrets.getAnthropicKey().catch((err: unknown) => {
+    logger.warn(
+      { error_class: err instanceof Error ? err.name : 'Unknown' },
+      'appliance-secrets read failed; falling back to env',
+    );
+    return null;
+  });
+  const effectiveKey = dbKey?.plaintext ?? config.ANTHROPIC_API_KEY;
+  const keySource: 'env' | 'db' = dbKey === null ? 'env' : 'db';
+
+  const probe = await probeAnthropicKey({ apiKey: effectiveKey });
   logger.info(
-    { models_visible: probe.models.length },
+    { models_visible: probe.models.length, key_source: keySource },
     'anthropic commercial-key probe ok',
   );
-  const anthropic = createAnthropicClient({
-    apiKey: config.ANTHROPIC_API_KEY,
-    ...(config.ZDR_ENABLED ? { zdr: true } : {}),
-  });
-  const anthropicSdk = new Anthropic({
-    apiKey: config.ANTHROPIC_API_KEY,
-    ...(config.ZDR_ENABLED ? { defaultHeaders: { 'anthropic-zdr': 'enabled' } } : {}),
+
+  const anthropicHolder = new AnthropicClientHolder({
+    apiKey: effectiveKey,
+    zdr: config.ZDR_ENABLED,
+    meta: {
+      source: keySource,
+      setAt: dbKey?.setAt ?? null,
+      fingerprint: dbKey?.fingerprint ?? null,
+    },
   });
 
-  const dbHandle = createDatabase(config.DATABASE_URL);
   const apiKeys = new ApiKeyStore(dbHandle.db);
   const sessions = new SessionManager(dbHandle.db);
   const tenantKeys = new PerTenantKeyResolver(dbHandle.db, kek);
@@ -81,7 +99,7 @@ async function main(): Promise<void> {
   const recognizerMisses = new RecognizerMissStore(dbHandle.db);
 
   const reprobe = new AnthropicKeyReprobe({
-    apiKey: config.ANTHROPIC_API_KEY,
+    getApiKey: () => anthropicHolder.getApiKey(),
     intervalMs: config.ANTHROPIC_REPROBE_INTERVAL_MS,
     logger,
   });
@@ -93,14 +111,15 @@ async function main(): Promise<void> {
     sessions,
     vault,
     engine,
-    anthropic,
-    anthropicSdk,
+    anthropicHolder,
     rateLimiter,
     spendTracker,
     policies,
     zdrEnabled: config.ZDR_ENABLED,
     audit,
     recognizerMisses,
+    applianceSecrets,
+    bootstrapApiKey: config.ANTHROPIC_API_KEY,
     logger,
     maxRequestBytes: config.MAX_REQUEST_BYTES,
     sessionTtlMinutes: config.SESSION_TTL_MINUTES,

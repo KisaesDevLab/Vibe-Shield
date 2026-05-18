@@ -27,7 +27,11 @@ import type Anthropic from '@anthropic-ai/sdk';
 const TOKEN_RE = /<([A-Z][A-Z_]*?)_(\d+)>/g;
 
 export interface StreamingDeps {
-  anthropic: Anthropic;
+  /**
+   * Live accessor for the raw SDK. Phase 23.5: rotation-aware so a key
+   * swap is picked up on the next stream call.
+   */
+  getAnthropic: () => Anthropic;
   vault: TokenVault;
   sessionId: string;
 }
@@ -88,7 +92,7 @@ export async function streamProxy(
   };
 
   try {
-    const stream = await deps.anthropic.messages.stream(params);
+    const stream = await deps.getAnthropic().messages.stream(params);
     for await (const event of stream as AsyncIterable<RawStreamEvent>) {
       if (
         event.type === 'content_block_delta' &&

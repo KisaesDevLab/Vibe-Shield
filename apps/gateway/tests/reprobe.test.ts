@@ -12,7 +12,7 @@ const silentLogger = pino({ level: 'silent' });
 describe('AnthropicKeyReprobe', () => {
   it('runOnce returns ok=true when probe resolves', async () => {
     const r = new AnthropicKeyReprobe({
-      apiKey: 'sk-ant-test',
+      getApiKey: () => 'sk-ant-test',
       intervalMs: 0,
       logger: silentLogger,
       probeFn: async () => Promise.resolve({ models: ['claude-opus-4-7'] }),
@@ -22,7 +22,7 @@ describe('AnthropicKeyReprobe', () => {
 
   it('runOnce returns reason=consumer_key on ConsumerKeyError', async () => {
     const r = new AnthropicKeyReprobe({
-      apiKey: 'sk-bad',
+      getApiKey: () => 'sk-bad',
       intervalMs: 0,
       logger: silentLogger,
       probeFn: async () =>
@@ -33,7 +33,7 @@ describe('AnthropicKeyReprobe', () => {
 
   it('runOnce returns reason=unreachable on AnthropicUnreachableError', async () => {
     const r = new AnthropicKeyReprobe({
-      apiKey: 'sk-ant-test',
+      getApiKey: () => 'sk-ant-test',
       intervalMs: 0,
       logger: silentLogger,
       probeFn: async () =>
@@ -44,7 +44,7 @@ describe('AnthropicKeyReprobe', () => {
 
   it('runOnce returns reason=unknown on generic error', async () => {
     const r = new AnthropicKeyReprobe({
-      apiKey: 'sk-ant-test',
+      getApiKey: () => 'sk-ant-test',
       intervalMs: 0,
       logger: silentLogger,
       probeFn: async () => Promise.reject(new Error('boom')) as never,
@@ -54,7 +54,7 @@ describe('AnthropicKeyReprobe', () => {
 
   it('start is a no-op when intervalMs <= 0', () => {
     const r = new AnthropicKeyReprobe({
-      apiKey: 'sk-ant-test',
+      getApiKey: () => 'sk-ant-test',
       intervalMs: 0,
       logger: silentLogger,
     });
@@ -68,7 +68,7 @@ describe('AnthropicKeyReprobe', () => {
     try {
       let calls = 0;
       const r = new AnthropicKeyReprobe({
-        apiKey: 'sk-ant-test',
+        getApiKey: () => 'sk-ant-test',
         intervalMs: 1000,
         logger: silentLogger,
         probeFn: async () => {
@@ -93,7 +93,7 @@ describe('AnthropicKeyReprobe', () => {
   it('onProbe callback receives result', async () => {
     const seen: Array<{ ok: boolean; reason?: string }> = [];
     const r = new AnthropicKeyReprobe({
-      apiKey: 'sk-ant-test',
+      getApiKey: () => 'sk-ant-test',
       intervalMs: 0,
       logger: silentLogger,
       probeFn: async () => Promise.resolve({ models: [] }),

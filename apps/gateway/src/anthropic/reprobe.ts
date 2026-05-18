@@ -27,7 +27,12 @@ import {
 } from './probe.js';
 
 export interface ReprobeOptions {
-  apiKey: string;
+  /**
+   * Live accessor for the current Anthropic key. Phase 23.5 introduced
+   * runtime key rotation via the admin UI; the reprobe loop pulls the
+   * latest value each tick instead of capturing one at construction.
+   */
+  getApiKey: () => string;
   intervalMs: number;
   logger: Logger;
   /** Optional callback invoked after every probe (for tests + audit). */
@@ -74,7 +79,7 @@ export class AnthropicKeyReprobe {
   async runOnce(): Promise<{ ok: true } | { ok: false; reason: string }> {
     const probe = this.opts.probeFn ?? probeAnthropicKey;
     try {
-      const r = await probe({ apiKey: this.opts.apiKey });
+      const r = await probe({ apiKey: this.opts.getApiKey() });
       this.opts.logger.debug(
         { models_visible: r.models.length },
         'anthropic key reprobe ok',

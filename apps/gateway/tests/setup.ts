@@ -1,5 +1,6 @@
 import {
   ApiKeyStore,
+  ApplianceSecretStore,
   SessionManager,
   TokenVault,
   type TenantKeyResolver,
@@ -12,6 +13,8 @@ import type { Message } from '@anthropic-ai/sdk/resources/messages.mjs';
 import pino, { type Logger } from 'pino';
 import { createApp } from '../src/app.js';
 import type { AnthropicMessagesClient } from '../src/anthropic/client.js';
+import { AnthropicClientHolder } from '../src/anthropic/holder.js';
+import type { probeAnthropicKey } from '../src/anthropic/probe.js';
 import { EngineClient } from '../src/engine/client.js';
 
 export const DATABASE_URL =
@@ -120,6 +123,11 @@ export function buildTestApp(deps: {
   policies?: import('../src/policy/resolver.js').PolicyResolver;
   audit?: import('@kisaesdevlab/vibe-shield-schema').AuditLogger;
   adminKey?: string;
+  /** Phase 23.5: opt-in helpers for /v1/admin/anthropic/key tests. */
+  anthropicHolder?: AnthropicClientHolder;
+  applianceSecrets?: ApplianceSecretStore;
+  bootstrapApiKey?: string;
+  probeFn?: typeof probeAnthropicKey;
 }) {
   const apiKeys = deps.apiKeys ?? new ApiKeyStore(deps.handle.db);
   const sessions = deps.sessions ?? new SessionManager(deps.handle.db);
@@ -139,6 +147,10 @@ export function buildTestApp(deps: {
     ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
     ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
     ...(deps.adminKey !== undefined ? { adminKey: deps.adminKey } : {}),
+    ...(deps.anthropicHolder !== undefined ? { anthropicHolder: deps.anthropicHolder } : {}),
+    ...(deps.applianceSecrets !== undefined ? { applianceSecrets: deps.applianceSecrets } : {}),
+    ...(deps.bootstrapApiKey !== undefined ? { bootstrapApiKey: deps.bootstrapApiKey } : {}),
+    ...(deps.probeFn !== undefined ? { probeFn: deps.probeFn } : {}),
   });
 }
 

@@ -9,6 +9,7 @@ import express, { type Express } from 'express';
 import type { Logger } from 'pino';
 import type {
   ApiKeyStore,
+  ApplianceSecretStore,
   AuditLogger,
   Database,
   RecognizerMissStore,
@@ -16,6 +17,8 @@ import type {
   TokenVault,
 } from '@kisaesdevlab/vibe-shield-schema';
 import type { AnthropicMessagesClient } from './anthropic/client.js';
+import type { AnthropicClientHolder } from './anthropic/holder.js';
+import type { probeAnthropicKey } from './anthropic/probe.js';
 import type { AnthropicKeyReprobe } from './anthropic/reprobe.js';
 import type { EngineClient } from './engine/client.js';
 import { errorHandler } from './errors.js';
@@ -41,7 +44,14 @@ export interface AppDeps {
   sessions: SessionManager;
   vault: TokenVault;
   engine: EngineClient;
-  anthropic: AnthropicMessagesClient;
+  /**
+   * Phase 23.5: prefer ``anthropicHolder`` for rotation-aware deployments.
+   * Tests can still pass a static ``anthropic`` (and optional
+   * ``anthropicSdk``) — when no holder is supplied, ``createApp`` wraps
+   * the static clients in degenerate accessors that always return them.
+   */
+  anthropicHolder?: AnthropicClientHolder;
+  anthropic?: AnthropicMessagesClient;
   /** Real Anthropic SDK instance — used by the streaming branch. */
   anthropicSdk?: Anthropic;
   logger: Logger;
@@ -58,11 +68,39 @@ export interface AppDeps {
   adminKey?: string;
   /** Reprobe handle for the admin "probe now" endpoint. */
   reprobe?: AnthropicKeyReprobe;
+  /** Appliance settings vault — gates Phase 23.5 admin /v1/admin/anthropic/key. */
+  applianceSecrets?: ApplianceSecretStore;
+  /** Env-set ANTHROPIC_API_KEY captured at boot. Used by the admin
+   *  DELETE /v1/admin/anthropic/key route to revert to the env key. */
+  bootstrapApiKey?: string;
+  /** Phase 23.5 probe override for tests. */
+  probeFn?: typeof probeAnthropicKey;
 }
 
 export function createApp(deps: AppDeps): Express {
   const app = express();
   app.disable('x-powered-by');
+
+  // Phase 23.5: routes consume Anthropic clients through accessors so
+  // an admin key-rotation takes effect on the next request. When a
+  // holder is supplied, the accessors read from it live; otherwise the
+  // legacy static clients are returned (kept for tests).
+  const staticAnthropic = deps.anthropic;
+  const staticAnthropicSdk = deps.anthropicSdk;
+  const getAnthropic: () => AnthropicMessagesClient =
+    deps.anthropicHolder !== undefined
+      ? () => deps.anthropicHolder!.getClient()
+      : staticAnthropic !== undefined
+        ? () => staticAnthropic
+        : () => {
+            throw new Error('Anthropic client not configured');
+          };
+  const getAnthropicSdk: (() => Anthropic) | undefined =
+    deps.anthropicHolder !== undefined
+      ? () => deps.anthropicHolder!.getSdk()
+      : staticAnthropicSdk !== undefined
+        ? () => staticAnthropicSdk
+        : undefined;
 
   // Order matters:
   //   1. Correlation ID lands before any other middleware so logs carry it.
@@ -94,6 +132,10 @@ export function createApp(deps: AppDeps): Express {
       ...(deps.recognizerMisses !== undefined ? { recognizerMisses: deps.recognizerMisses } : {}),
       ...(deps.policies !== undefined ? { policies: deps.policies } : {}),
       ...(deps.reprobe !== undefined ? { reprobe: deps.reprobe } : {}),
+      ...(deps.anthropicHolder !== undefined ? { anthropicHolder: deps.anthropicHolder } : {}),
+      ...(deps.applianceSecrets !== undefined ? { applianceSecrets: deps.applianceSecrets } : {}),
+      ...(deps.bootstrapApiKey !== undefined ? { bootstrapApiKey: deps.bootstrapApiKey } : {}),
+      ...(deps.probeFn !== undefined ? { probeFn: deps.probeFn } : {}),
     }),
   );
 
@@ -103,12 +145,12 @@ export function createApp(deps: AppDeps): Express {
   v1.use(
     messagesRouter({
       engine: deps.engine,
-      anthropic: deps.anthropic,
+      getAnthropic,
       vault: deps.vault,
       sessions: deps.sessions,
       apiKeys: deps.apiKeys,
       defaultSessionTtlMinutes: deps.sessionTtlMinutes,
-      ...(deps.anthropicSdk !== undefined ? { anthropicSdk: deps.anthropicSdk } : {}),
+      ...(getAnthropicSdk !== undefined ? { getAnthropicSdk } : {}),
       ...(deps.rateLimiter !== undefined ? { rateLimiter: deps.rateLimiter } : {}),
       ...(deps.spendTracker !== undefined ? { spendTracker: deps.spendTracker } : {}),
       ...(deps.policies !== undefined ? { policies: deps.policies } : {}),

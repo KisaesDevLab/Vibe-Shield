@@ -29,9 +29,11 @@ import type { SpendTracker } from '../quota/spend-cap.js';
 
 export interface MessagesDeps {
   engine: EngineClient;
-  anthropic: AnthropicMessagesClient;
-  /** Concrete Anthropic SDK instance for streaming (typed methods). */
-  anthropicSdk?: Anthropic;
+  /** Live accessor for the current Anthropic wrapped client. */
+  getAnthropic: () => AnthropicMessagesClient;
+  /** Live accessor for the raw SDK (streaming branch). Optional —
+   *  deployments without streaming can omit it. */
+  getAnthropicSdk?: () => Anthropic;
   vault: TokenVault;
   sessions: SessionManager;
   apiKeys: ApiKeyStore;
@@ -48,7 +50,7 @@ export function messagesRouter(deps: MessagesDeps): Router {
   const router: Router = Router();
   const orchestrator = new ProxyOrchestrator({
     engine: deps.engine,
-    anthropic: deps.anthropic,
+    getAnthropic: deps.getAnthropic,
     vault: deps.vault,
     sessions: deps.sessions,
     apiKeys: deps.apiKeys,
@@ -73,7 +75,7 @@ export function messagesRouter(deps: MessagesDeps): Router {
           throw new AuthenticationError();
         }
         if (parsed.data.stream === true) {
-          if (deps.anthropicSdk === undefined) {
+          if (deps.getAnthropicSdk === undefined) {
             throw new NotImplementedError('streaming not configured for this deployment');
           }
           await orchestrator.checkQuotas(req.auth);
@@ -89,7 +91,7 @@ export function messagesRouter(deps: MessagesDeps): Router {
           } as unknown as Anthropic.MessageCreateParamsStreaming;
           res.setHeader('vs-session-id', sessionId);
           await streamProxy(res, streamingParams, {
-            anthropic: deps.anthropicSdk,
+            getAnthropic: deps.getAnthropicSdk,
             vault: deps.vault,
             sessionId,
           });
