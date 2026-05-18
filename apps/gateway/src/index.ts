@@ -53,13 +53,38 @@ async function main(): Promise<void> {
   // takes precedence over ANTHROPIC_API_KEY in env. Env remains the
   // bootstrap fallback for fresh installs where the operator hasn't yet
   // touched the admin UI.
-  const dbKey = await applianceSecrets.getAnthropicKey().catch((err: unknown) => {
-    logger.warn(
-      { error_class: err instanceof Error ? err.name : 'Unknown' },
-      'appliance-secrets read failed; falling back to env',
-    );
-    return null;
-  });
+  //
+  // Fail-closed posture (review-pass v1.3): a decrypt failure on the
+  // persisted ciphertext means the row is present but tampered with
+  // or the KEK changed — that's a data-integrity problem we must NOT
+  // paper over by silently falling back to env. Re-throw so the
+  // gateway refuses to start until an operator clears the row or
+  // rotates the KEK. ApplianceSettingsMissingError (row absent) is
+  // still benign — log + fall through to env.
+  let dbKey: Awaited<ReturnType<typeof applianceSecrets.getAnthropicKey>>;
+  try {
+    dbKey = await applianceSecrets.getAnthropicKey();
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      err.name === 'ApplianceSettingsMissingError'
+    ) {
+      logger.warn(
+        { error_class: err.name },
+        'vs_appliance_settings row missing; using env-backed Anthropic key',
+      );
+      dbKey = null;
+    } else {
+      // CryptoError / KekUnavailableError / unknown — fail closed.
+      logger.fatal(
+        { error_class: err instanceof Error ? err.name : 'Unknown' },
+        'appliance-secrets decrypt failed; refusing to boot. ' +
+          'Clear vs_appliance_settings.anthropic_api_key_ciphertext via ' +
+          'the admin UI or rotate the KEK.',
+      );
+      throw err;
+    }
+  }
   const effectiveKey = dbKey?.plaintext ?? config.ANTHROPIC_API_KEY;
   const keySource: 'env' | 'db' = dbKey === null ? 'env' : 'db';
 
@@ -149,13 +174,17 @@ async function main(): Promise<void> {
     }
   }
 
-  // Bootstrap admin: on first boot, when the users table is empty AND
+  // Bootstrap admin: on first boot, when no *active* user exists AND
   // BOOTSTRAP_ADMIN_EMAIL is set, create that user as is_org_admin=true
-  // with admin role on every module. Idempotent — subsequent boots are
-  // a no-op once anyone exists.
+  // with admin role on every module.
+  //
+  // Idempotence (review-pass v1.3): counting *active* users (not all)
+  // is what we want. If the bootstrap user was disabled, an appliance
+  // restart should re-create them — otherwise the operator is locked
+  // out. ``UserStore.countActive()`` excludes disabled rows.
   if (config.BOOTSTRAP_ADMIN_EMAIL !== undefined) {
-    const existing = await userStore.count();
-    if (existing === 0) {
+    const existingActive = await userStore.countActive();
+    if (existingActive === 0) {
       const bootstrap = await userStore.create({
         email: config.BOOTSTRAP_ADMIN_EMAIL,
         isOrgAdmin: true,
@@ -165,6 +194,23 @@ async function main(): Promise<void> {
         userStore.setRole(bootstrap.id, 'scan', 'admin'),
         userStore.setRole(bootstrap.id, 'compliance', 'admin'),
       ]);
+      // System-actor audit so compliance can prove who created the
+      // bootstrap admin and when. Best-effort: an audit-write failure
+      // here must not block the gateway from starting.
+      void audit
+        .append({
+          tenantId: 'appliance',
+          eventType: 'user_created',
+          module: 'identity',
+          actorType: 'system',
+          payload: {
+            action: 'bootstrap_admin',
+            user_id: bootstrap.id,
+            email_domain: bootstrap.email.split('@')[1] ?? '?',
+            is_org_admin: true,
+          },
+        })
+        .catch(() => undefined);
       logger.info(
         { user_id: bootstrap.id, email_domain: bootstrap.email.split('@')[1] ?? '?' },
         'bootstrap admin created',

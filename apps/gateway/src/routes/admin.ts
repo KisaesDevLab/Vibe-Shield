@@ -24,6 +24,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod';
 
 import {
+  UserExistsError,
   fingerprintOf,
   type ApiKeyStore,
   type ApplianceSecretStore,
@@ -39,6 +40,7 @@ import {
 import type { AnthropicKeyReprobe } from '../anthropic/reprobe.js';
 import {
   AuthenticationError,
+  ConflictError,
   EngineUnavailableError,
   InvalidRequestError,
   NotFoundError,
@@ -380,22 +382,35 @@ export function adminRouter(deps: AdminDeps): Router {
           );
         }
         const email = parsed.data.email.trim().toLowerCase();
+        if (email.length === 0) {
+          throw new InvalidRequestError(
+            'email is required (whitespace-only payload rejected)',
+          );
+        }
         // Create the user idempotently. If they already exist
-        // (re-invite), just return the existing record.
+        // (re-invite), just return the existing record. UserExistsError
+        // is caught here only because a race between findByEmail and
+        // create could let it through — surface as 409 Conflict.
         let user = await deps.users.findByEmail(email);
         if (user === null) {
-          user = await deps.users.create({
-            email,
-            isOrgAdmin: parsed.data.isOrgAdmin,
-          });
+          try {
+            user = await deps.users.create({
+              email,
+              isOrgAdmin: parsed.data.isOrgAdmin,
+            });
+          } catch (e) {
+            if (e instanceof UserExistsError) {
+              throw new ConflictError(`user with email ${email} already exists`);
+            }
+            throw e;
+          }
           if (deps.audit !== undefined) {
             await deps.audit
               .append({
                 tenantId: 'appliance',
-                eventType: 'api_key_issue',
+                eventType: 'user_created',
                 module: 'identity',
                 payload: {
-                  action: 'user_created',
                   user_id: user.id,
                   is_org_admin: parsed.data.isOrgAdmin,
                   email_domain: email.split('@')[1] ?? '?',
@@ -451,18 +466,19 @@ export function adminRouter(deps: AdminDeps): Router {
         const id = req.params.id ?? '';
         const user = await deps.users.findById(id);
         if (user === null) throw new NotFoundError('user');
+        const before = await deps.users.findByIdWithRoles(id);
         await deps.users.setRole(id, parsed.data.module, parsed.data.role);
         if (deps.audit !== undefined) {
           await deps.audit
             .append({
               tenantId: 'appliance',
-              eventType: 'policy_change',
+              eventType: 'user_role_changed',
               module: 'identity',
               payload: {
-                action: 'role_set',
                 user_id: id,
                 module: parsed.data.module,
-                role: parsed.data.role,
+                from: before?.roles[parsed.data.module] ?? null,
+                to: parsed.data.role,
               },
             })
             .catch(() => undefined);
@@ -486,7 +502,23 @@ export function adminRouter(deps: AdminDeps): Router {
         if (!parsed.success) {
           throw new InvalidRequestError('invalid module');
         }
+        const before = await deps.users.findByIdWithRoles(id);
         await deps.users.revokeRole(id, parsed.data);
+        if (deps.audit !== undefined) {
+          await deps.audit
+            .append({
+              tenantId: 'appliance',
+              eventType: 'user_role_changed',
+              module: 'identity',
+              payload: {
+                user_id: id,
+                module: parsed.data,
+                from: before?.roles[parsed.data] ?? null,
+                to: null,
+              },
+            })
+            .catch(() => undefined);
+        }
         res.status(204).end();
       } catch (err) {
         next(err);
@@ -510,6 +542,20 @@ export function adminRouter(deps: AdminDeps): Router {
         const user = await deps.users.findById(id);
         if (user === null) throw new NotFoundError('user');
         await deps.users.setOrgAdmin(id, parsed.data.isOrgAdmin);
+        if (deps.audit !== undefined) {
+          await deps.audit
+            .append({
+              tenantId: 'appliance',
+              eventType: 'user_org_admin_changed',
+              module: 'identity',
+              payload: {
+                user_id: id,
+                from: user.isOrgAdmin,
+                to: parsed.data.isOrgAdmin,
+              },
+            })
+            .catch(() => undefined);
+        }
         res.status(204).end();
       } catch (err) {
         next(err);
@@ -531,6 +577,19 @@ export function adminRouter(deps: AdminDeps): Router {
           throw new InvalidRequestError('cannot disable yourself');
         }
         await deps.users.disable(id);
+        if (deps.audit !== undefined) {
+          await deps.audit
+            .append({
+              tenantId: 'appliance',
+              eventType: 'user_disabled',
+              module: 'identity',
+              payload: {
+                user_id: id,
+                email_domain: user.email.split('@')[1] ?? '?',
+              },
+            })
+            .catch(() => undefined);
+        }
         res.status(204).end();
       } catch (err) {
         next(err);

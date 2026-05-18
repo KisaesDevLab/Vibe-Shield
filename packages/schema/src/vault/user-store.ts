@@ -107,6 +107,19 @@ export class UserStore {
     return row === undefined ? null : toRecord(row);
   }
 
+  /**
+   * Bootstrap helper (review-pass v1.3). Returns the count of *active*
+   * (non-disabled) users only, so the bootstrap-admin block doesn't
+   * lock the operator out after the bootstrap user is disabled.
+   */
+  async countActive(): Promise<number> {
+    const rows = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(isNull(users.disabledAt));
+    return rows.length;
+  }
+
   /** Hydrate a user with their per-module role map. */
   async findByIdWithRoles(id: string): Promise<UserWithRoles | null> {
     const user = await this.findById(id);

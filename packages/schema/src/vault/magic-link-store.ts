@@ -62,23 +62,27 @@ export class MagicLinkStore {
    * Validate a presented cleartext token. On success, deletes the row
    * (single-use) and returns the bound email. Throws on missing,
    * expired, or already-consumed tokens.
+   *
+   * Atomicity (review-pass v1.3): the SELECT + DELETE pair was non-
+   * atomic in v1; under concurrent consume() calls with the same
+   * token, both could pass the SELECT and authenticate two users.
+   * v1.3 collapses it to a single ``DELETE ... RETURNING`` so the
+   * row vanishes in the same statement that returns it — only one
+   * caller can ever see the row.
    */
   async consume(token: string): Promise<{ email: string }> {
     const tokenHash = hashToken(token);
     const now = new Date();
     const rows = await this.db
-      .select()
-      .from(magicLinks)
+      .delete(magicLinks)
       .where(and(eq(magicLinks.tokenHash, tokenHash), gt(magicLinks.expiresAt, now)))
-      .limit(1);
+      .returning({ email: magicLinks.email });
     const row = rows[0];
     if (row === undefined) {
       // Could be: never issued, expired, or already consumed.
       // We don't distinguish to avoid leaking enumeration info.
       throw new MagicLinkInvalidError('magic link invalid or already used');
     }
-    // Best-effort single-use: delete the row before returning.
-    await this.db.delete(magicLinks).where(eq(magicLinks.tokenHash, tokenHash));
     return { email: row.email };
   }
 

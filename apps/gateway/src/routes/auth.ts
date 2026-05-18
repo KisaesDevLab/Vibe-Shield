@@ -75,33 +75,42 @@ export function authRouter(deps: AuthDeps): Router {
         // Always respond 204 — never tell the caller whether the
         // address belongs to a user. Only actually send the email
         // when the user exists and is enabled.
+        //
+        // Audit posture (review-pass v1.3): always write an audit row,
+        // whether or not the user exists. Writing only on success
+        // turned the audit table into a side-channel: anyone with
+        // audit-read could enumerate users by checking which requests
+        // produced rows. The ``outcome`` field distinguishes hits from
+        // misses for ops; the payload_hash leaks nothing about which
+        // is which to an attacker without DB access.
+        const ip = req.ip ?? null;
         if (user !== null) {
-          const ip = req.ip ?? null;
           const { token, expiresAt } = await deps.magicLinks.issue(email, ip);
           // Magic-link URL points DIRECTLY at the consume endpoint. The
           // gateway sets the session cookie and 302s to / so the SPA
           // loads already-authenticated. No client-side token handling.
           const url = `${deps.publicUrl.replace(/\/$/, '')}/api/auth/consume?token=${encodeURIComponent(token)}`;
           await deps.mailer.sendMagicLink({ to: email, url, expiresAt });
-          if (deps.audit !== undefined) {
-            await deps.audit
-              .append({
-                tenantId: 'appliance',
-                eventType: 'request',
-                module: 'identity',
-                payload: {
-                  action: 'magic_link_requested',
-                  user_id: user.id,
-                  email_domain: email.split('@')[1] ?? '?',
-                },
-              })
-              .catch(() => undefined);
-          }
         } else {
           deps.logger.info(
             { email_domain: email.split('@')[1] ?? '?' },
             'magic link requested for unknown email (no-op)',
           );
+        }
+        if (deps.audit !== undefined) {
+          await deps.audit
+            .append({
+              tenantId: 'appliance',
+              eventType: 'magic_link_requested',
+              module: 'identity',
+              payload: {
+                outcome: user !== null ? 'sent' : 'no_user',
+                user_id: user?.id ?? null,
+                email_domain: email.split('@')[1] ?? '?',
+                requested_ip: ip,
+              },
+            })
+            .catch(() => undefined);
         }
         res.status(204).end();
       } catch (err) {
@@ -146,9 +155,9 @@ export function authRouter(deps: AuthDeps): Router {
           await deps.audit
             .append({
               tenantId: 'appliance',
-              eventType: 'session_create',
+              eventType: 'magic_link_consumed',
               module: 'identity',
-              payload: { action: 'magic_link_consumed', user_id: user.id },
+              payload: { user_id: user.id },
             })
             .catch(() => undefined);
         }
@@ -166,17 +175,24 @@ export function authRouter(deps: AuthDeps): Router {
       try {
         const token = readSessionCookie(req);
         if (token !== undefined) {
+          // Idempotent revoke — UPDATE-where-not-revoked is a no-op
+          // on a session already revoked.
           await deps.sessions.revoke(token);
-          if (deps.audit !== undefined && req.user !== undefined) {
-            await deps.audit
-              .append({
-                tenantId: 'appliance',
-                eventType: 'session_purge',
-                module: 'identity',
-                payload: { action: 'logout', user_id: req.user.id },
-              })
-              .catch(() => undefined);
-          }
+        }
+        // Audit always — even when the cookie was gone, the act of
+        // calling logout is the operator's intent and worth logging.
+        if (deps.audit !== undefined) {
+          await deps.audit
+            .append({
+              tenantId: 'appliance',
+              eventType: 'session_purge',
+              module: 'identity',
+              payload: {
+                user_id: req.user?.id ?? null,
+                had_cookie: token !== undefined,
+              },
+            })
+            .catch(() => undefined);
         }
         clearSessionCookie(res, deps.secureCookies);
         res.status(204).end();

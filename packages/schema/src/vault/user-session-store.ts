@@ -62,13 +62,21 @@ export class UserSessionStore {
    * Validate a presented cleartext session token. On success, slides
    * the TTL (last_seen_at = now, expires_at = now + idle). Throws
    * ``SessionInvalidError`` on missing, expired, or revoked sessions.
+   *
+   * Atomicity (review-pass v1.3): the v1 implementation did SELECT
+   * then UPDATE in two round-trips. Under concurrent validates on the
+   * same session token a revoke happening in between could be lost.
+   * v1.3 collapses it to one ``UPDATE ... WHERE (still valid) ...
+   * RETURNING`` so the slide and the existence check happen
+   * atomically.
    */
   async validate(token: string): Promise<ResolvedSession> {
     const tokenHash = hashSessionToken(token);
     const now = new Date();
+    const nextExpires = new Date(now.getTime() + this.idleTtlMinutes * 60_000);
     const rows = await this.db
-      .select()
-      .from(userSessions)
+      .update(userSessions)
+      .set({ lastSeenAt: now, expiresAt: nextExpires })
       .where(
         and(
           eq(userSessions.tokenHash, tokenHash),
@@ -76,16 +84,11 @@ export class UserSessionStore {
           isNull(userSessions.revokedAt),
         ),
       )
-      .limit(1);
+      .returning({ userId: userSessions.userId });
     const row = rows[0];
     if (row === undefined) {
       throw new SessionInvalidError('session invalid or expired');
     }
-    const nextExpires = new Date(now.getTime() + this.idleTtlMinutes * 60_000);
-    await this.db
-      .update(userSessions)
-      .set({ lastSeenAt: now, expiresAt: nextExpires })
-      .where(eq(userSessions.tokenHash, tokenHash));
     return { userId: row.userId, expiresAt: nextExpires };
   }
 

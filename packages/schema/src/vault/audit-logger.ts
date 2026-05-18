@@ -34,7 +34,16 @@ export type AuditEventType =
   | 'rate_limit_breached'
   | 'commercial_key_probe'
   | 'anthropic_key_set'
-  | 'anthropic_key_cleared';
+  | 'anthropic_key_cleared'
+  // Phase 24 identity events. Replaces earlier code that emitted
+  // 'api_key_issue' / 'policy_change' / 'session_create' as
+  // workarounds; review pass v1.3 surfaced the drift.
+  | 'user_created'
+  | 'user_disabled'
+  | 'user_role_changed'
+  | 'user_org_admin_changed'
+  | 'magic_link_requested'
+  | 'magic_link_consumed';
 
 /**
  * Product module the event belongs to (Phase 23.5 / UI-Build-Addendum §4.6).
