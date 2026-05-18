@@ -19,6 +19,7 @@ import {
   AuditLogger,
   MagicLinkStore,
   RecognizerMissStore,
+  RedactJobStore,
   SessionManager,
   TokenVault,
   UserSessionStore,
@@ -39,6 +40,8 @@ import { PromptRegistry } from './prompts/registry.js';
 import { RateLimiter } from './quota/rate-limiter.js';
 import { SpendTracker } from './quota/spend-cap.js';
 import { SpendRateLimiter } from './quota/spend-rate-limiter.js';
+import { RedactPipeline } from './redact/pipeline.js';
+import { JobStorage } from './redact/storage.js';
 import { PerTenantKeyResolver } from './tenant-key/resolver.js';
 
 async function main(): Promise<void> {
@@ -165,6 +168,26 @@ async function main(): Promise<void> {
   });
   reprobe.start();
 
+  // Phase 17 v1.4 — Redact module wiring.
+  const redactJobStore = new RedactJobStore(dbHandle.db);
+  const jobStorage = new JobStorage({ baseDir: config.REDACT_JOBS_DIR });
+  const redactPipeline = new RedactPipeline({
+    jobs: redactJobStore,
+    engine,
+    storage: jobStorage,
+    audit,
+    logger,
+  });
+  // Reap any jobs that were running when the gateway crashed.
+  void redactJobStore
+    .reapStaleRunning()
+    .then((n) => {
+      if (n > 0) {
+        logger.warn({ count: n }, 'reaped stale running redact jobs');
+      }
+    })
+    .catch(() => undefined);
+
   // Phase 24 — identity v2 wiring. Constructed unconditionally; the
   // auth routes themselves degrade gracefully when SMTP isn't set.
   const userStore = new UserStore(dbHandle.db);
@@ -269,6 +292,10 @@ async function main(): Promise<void> {
     users: userStore,
     userSessions: userSessionStore,
     magicLinks: magicLinkStore,
+    redactJobs: redactJobStore,
+    redactStorage: jobStorage,
+    redactPipeline,
+    redactMaxUploadBytes: config.REDACT_MAX_UPLOAD_BYTES,
     ...(mailer !== undefined ? { mailer } : {}),
     ...(config.PUBLIC_URL !== undefined ? { publicUrl: config.PUBLIC_URL } : {}),
     logger,

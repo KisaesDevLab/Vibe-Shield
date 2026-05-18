@@ -9,9 +9,11 @@ import { RecognizerMissesView } from './views/RecognizerMissesView.js';
 import { AnthropicProbeView } from './views/AnthropicProbeView.js';
 import { PoliciesView } from './views/PoliciesView.js';
 import { PromptsView } from './views/PromptsView.js';
+import { RedactView } from './views/RedactView.js';
 import { UsersView } from './views/UsersView.js';
 
 export type ViewName =
+  | 'redact'
   | 'keys'
   | 'audit'
   | 'misses'
@@ -36,7 +38,7 @@ export function App(): JSX.Element {
   const [client, setClient] = useState<AdminClient | null>(null);
   const [me, setMe] = useState<MeResponse | null>(null);
   const [resolving, setResolving] = useState(true);
-  const [view, setView] = useState<ViewName>('keys');
+  const [view, setView] = useState<ViewName>('redact');
 
   // Initial session probe. Cookie-based; no headers needed.
   useEffect(() => {
@@ -105,6 +107,7 @@ export function App(): JSX.Element {
         me={me}
       />
       <main className="content">
+        {view === 'redact' && <RedactView client={client} me={me} />}
         {view === 'keys' && <ApiKeysView client={client} />}
         {view === 'audit' && <AuditView client={client} />}
         {view === 'misses' && <RecognizerMissesView client={client} />}

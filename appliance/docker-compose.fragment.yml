@@ -34,7 +34,7 @@ services:
   # Internal-only. No external port. Reachable on the internal Docker
   # network as `vibe-shield-engine:8000`.
   vibe-shield-engine:
-    image: ghcr.io/kisaesdevlab/vibe-shield-engine:${VIBE_SHIELD_VERSION:-v1.3.0}
+    image: ghcr.io/kisaesdevlab/vibe-shield-engine:${VIBE_SHIELD_VERSION:-v1.4.0}
     container_name: vibe-shield-engine
     restart: unless-stopped
     environment:
@@ -65,7 +65,7 @@ services:
   # before starting the server. Set to "false" if you prefer to run
   # migrations as a separate one-shot job for blue-green control.
   vibe-shield-gateway:
-    image: ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.3.0}
+    image: ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.4.0}
     container_name: vibe-shield-gateway
     restart: unless-stopped
     environment:
@@ -102,6 +102,15 @@ services:
       BOOTSTRAP_ADMIN_EMAIL: ${VIBE_SHIELD_BOOTSTRAP_ADMIN_EMAIL:-}
       SESSION_IDLE_TTL_MINUTES: ${VIBE_SHIELD_SESSION_IDLE_TTL_MINUTES:-1440}
       MAGIC_LINK_TTL_MINUTES: ${VIBE_SHIELD_MAGIC_LINK_TTL_MINUTES:-15}
+      # Phase 17 v1.4 — Redact module artifact storage.
+      REDACT_JOBS_DIR: /var/lib/vibe-shield/redact/jobs
+      REDACT_MAX_UPLOAD_BYTES: ${VIBE_SHIELD_REDACT_MAX_UPLOAD_BYTES:-26214400}
+    volumes:
+      # Phase 17 v1.4 — persistent storage for per-job artifacts
+      # (source upload, redacted PDF, extracted MD/JSON, audit log).
+      # Survives container recreate; backed up by the appliance's
+      # standard volume-snapshot job.
+      - vibe-shield-redact:/var/lib/vibe-shield/redact
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -127,7 +136,7 @@ services:
   # nginx. Vibe-Appliance operators ignore this — the appliance's per-app
   # env file supplies the right value automatically.
   vibe-shield-admin:
-    image: ghcr.io/kisaesdevlab/vibe-shield-admin:${VIBE_SHIELD_VERSION:-v1.3.0}
+    image: ghcr.io/kisaesdevlab/vibe-shield-admin:${VIBE_SHIELD_VERSION:-v1.4.0}
     container_name: vibe-shield-admin
     restart: unless-stopped
     environment:
@@ -142,3 +151,7 @@ networks:
   vibe-internal:
     external: true
     name: ${VIBE_NETWORK_NAME:-vibe-network}
+
+volumes:
+  # Persistent volume for Phase 17 v1.4 Redact module artifacts.
+  vibe-shield-redact: {}

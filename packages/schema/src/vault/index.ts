@@ -85,3 +85,13 @@ export type {
   IssuedSession,
   ResolvedSession,
 } from './user-session-store.js';
+
+export {
+  RedactJobNotFoundError,
+  RedactJobStore,
+} from './redact-job-store.js';
+export type {
+  CreateRedactJobInput,
+  RedactJobRecord,
+  RedactJobStatus,
+} from './redact-job-store.js';

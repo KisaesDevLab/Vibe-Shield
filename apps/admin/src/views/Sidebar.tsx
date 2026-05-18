@@ -16,6 +16,11 @@ interface Item {
 }
 
 const items: Item[] = [
+  {
+    id: 'redact',
+    label: 'Redact',
+    visible: (me) => me.is_org_admin || me.roles.redact !== undefined,
+  },
   { id: 'keys', label: 'API Keys' },
   { id: 'audit', label: 'Audit Log' },
   { id: 'misses', label: 'Recognizer Misses' },

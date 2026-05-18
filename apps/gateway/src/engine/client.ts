@@ -57,6 +57,28 @@ export interface RedactResponse {
   misses?: EngineMissEntry[];
 }
 
+/** Phase 17 — image redaction. Per-region bbox metadata + a masked PNG. */
+export interface EngineMaskedRegion {
+  entity_type: string;
+  token?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  confidence?: number;
+}
+
+export interface RedactImageResponse {
+  image_sha256: string;
+  masked_image_sha256: string;
+  /** base64-encoded PNG of the masked image. */
+  masked_image_base64: string;
+  /** OCR'd text after redaction (tokens substituted in). */
+  redacted_text: string;
+  tokens: EngineTokenEntry[];
+  masked_regions: EngineMaskedRegion[];
+}
+
 export interface AnalyzeResponse {
   results: EngineSpan[];
 }
@@ -84,6 +106,26 @@ export class EngineClient {
     correlationId?: string,
   ): Promise<RedactResponse> {
     return this.post<RedactResponse>('/redact', { text }, correlationId);
+  }
+
+  /**
+   * Phase 17 — redact a single image. ``imageBytes`` is the raw PNG /
+   * JPEG / WebP bytes; this method base64-encodes them for the
+   * engine's JSON body. The engine returns the masked PNG as base64
+   * plus per-region bbox metadata.
+   */
+  async redactImage(
+    imageBytes: Buffer,
+    correlationId?: string,
+  ): Promise<RedactImageResponse> {
+    return this.post<RedactImageResponse>(
+      '/redact-image',
+      { image_base64: imageBytes.toString('base64') },
+      correlationId,
+      // Image redaction is heavier than text (OCR + face detection +
+      // barcode scan); give it a longer timeout than the default 30s.
+      120_000,
+    );
   }
 
   async analyze(
@@ -118,9 +160,13 @@ export class EngineClient {
     path: string,
     body: unknown,
     correlationId?: string,
+    timeoutMsOverride?: number,
   ): Promise<T> {
     const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), this.timeoutMs);
+    const t = setTimeout(
+      () => ctl.abort(),
+      timeoutMsOverride ?? this.timeoutMs,
+    );
     try {
       const headers: Record<string, string> = {
         'content-type': 'application/json',
@@ -143,7 +189,8 @@ export class EngineClient {
     } catch (err) {
       if (err instanceof EngineFailureError) throw err;
       if (err instanceof Error && err.name === 'AbortError') {
-        throw new EngineUnreachableError(`engine ${path} timed out after ${this.timeoutMs.toString()}ms`);
+        const ms = timeoutMsOverride ?? this.timeoutMs;
+        throw new EngineUnreachableError(`engine ${path} timed out after ${ms.toString()}ms`);
       }
       throw new EngineUnreachableError(
         err instanceof Error ? err.message : 'unknown',

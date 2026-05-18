@@ -13,6 +13,7 @@ import type {
   Database,
   MagicLinkStore,
   RecognizerMissStore,
+  RedactJobStore,
   SessionManager,
   TokenVault,
   UserSessionStore,
@@ -37,7 +38,10 @@ import type { PromptRegistry } from './prompts/registry.js';
 import type { RateLimiter } from './quota/rate-limiter.js';
 import type { SpendTracker } from './quota/spend-cap.js';
 import type { SpendRateLimiter } from './quota/spend-rate-limiter.js';
+import type { RedactPipeline } from './redact/pipeline.js';
+import type { JobStorage } from './redact/storage.js';
 import { adminRouter } from './routes/admin.js';
+import { redactRouter } from './routes/redact.js';
 import { healthRouter } from './routes/health.js';
 import { materializeRouter } from './routes/materialize.js';
 import { messagesRouter } from './routes/messages.js';
@@ -95,6 +99,13 @@ export interface AppDeps {
   magicLinks?: MagicLinkStore;
   mailer?: Mailer;
   publicUrl?: string;
+  /** Phase 17 v1.4 — user-facing Redact module. All three must be
+   *  set together; otherwise /v1/redact/* is disabled. */
+  redactJobs?: RedactJobStore;
+  redactStorage?: JobStorage;
+  redactPipeline?: RedactPipeline;
+  /** Per-upload byte cap for /v1/redact/jobs. Default 25 MB. */
+  redactMaxUploadBytes?: number;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -220,6 +231,30 @@ export function createApp(deps: AppDeps): Express {
     }),
   );
   v1.use(sessionsRouter({ sessions: deps.sessions, defaultTtlMinutes: deps.sessionTtlMinutes }));
+
+  // Phase 17 v1.4 — Redact module. The router enforces RBAC at every
+  // route (requires('redact', <role>)); we mount it inside the v1
+  // group but session-cookie auth runs before, so req.user is set.
+  // This route group does NOT require a tenant Bearer key — it's
+  // user-driven via the SPA. We bypass apiKeyMiddleware by mounting
+  // it on the parent app instead.
+  if (
+    deps.redactJobs !== undefined &&
+    deps.redactStorage !== undefined &&
+    deps.redactPipeline !== undefined
+  ) {
+    app.use(
+      redactRouter({
+        jobs: deps.redactJobs,
+        storage: deps.redactStorage,
+        pipeline: deps.redactPipeline,
+        logger: deps.logger,
+        ...(deps.redactMaxUploadBytes !== undefined
+          ? { maxUploadBytes: deps.redactMaxUploadBytes }
+          : {}),
+      }),
+    );
+  }
   v1.use(
     materializeRouter({
       vault: deps.vault,

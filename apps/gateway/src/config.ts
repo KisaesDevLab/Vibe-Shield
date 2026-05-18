@@ -150,6 +150,16 @@ const configSchema = z.object({
   SESSION_IDLE_TTL_MINUTES: z.coerce.number().int().positive().default(24 * 60),
   /** Magic-link TTL, minutes. Default 15. */
   MAGIC_LINK_TTL_MINUTES: z.coerce.number().int().positive().default(15),
+  // -- Phase 17 v1.4 Redact module -----------------------------------
+  /** Base directory for per-job artifacts. Mounted on the appliance
+   *  volume so artifacts survive container recreate. */
+  REDACT_JOBS_DIR: z.string().default('/var/lib/vibe-shield/redact/jobs'),
+  /** Per-upload byte cap. Default 25 MB. */
+  REDACT_MAX_UPLOAD_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(25 * 1024 * 1024),
 });
 
 export type GatewayConfig = z.infer<typeof configSchema>;
