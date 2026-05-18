@@ -409,3 +409,4 @@ Core end-to-end redaction pipeline live: `POST /v1/messages` accepts an Anthropi
 
 - Stack drift: BUILD_PLAN.md §2.1 specifies Node 20; the active kickoff prompt bumped to Node 24. CLAUDE.md and `package.json` use 24 — reconcile BUILD_PLAN.md when convenient.
 - `docs/compliance-memo.md` is referenced by the kickoff prompt but not yet present in the repo.
+
