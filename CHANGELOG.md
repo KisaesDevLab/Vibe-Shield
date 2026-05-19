@@ -4,6 +4,35 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-05-19
+
+### Added — Phase 26 (Module 2: Shield · Scan) foundation
+
+First slice of the **Scan** module. Point Shield at a file or a zip archive and get back a report of every location that carries unredacted PII — SSNs, EINs, bank accounts, names, addresses, emails, phones, with line / cell / page anchors. Cleartext stays on the appliance; the report carries hashes + tiny redacted snippets only.
+
+- **Engine** — new `app/scan/` package: `Scanner` ABC + `PlainTextScanner`, `CsvScanner` (streaming, sniffer-based header detection, Excel column labels), `OfficeDocScanner` (xlsx via openpyxl), `PdfTextScanner` (text-layer; ImagePdfScanner deferred to v1.9), `ArchiveScanner` (zip with depth/total-size/file-count limits, recursive dispatch, encrypted-entry skip). New `POST /scan` endpoint streams NDJSON: `file_scanned`, `file_skipped`, `finding`, `summary`. Snippet redaction + SHA-256(cleartext) → no PII in the response payloads.
+- **Schema** — migration `0008_scan_jobs.sql` adds `vs_scan_jobs`, `vs_scan_files`, `vs_scan_findings`. Severity stored as text (`low|medium|high`). Findings join to a file row (cascade-delete on job purge). New `ScanJobStore` vault class with `create / findById / list* / markRunning / markCompleted / markFailed / addFile / addFinding / listFiles / listFindings / delete`.
+- **Gateway** — `EngineClient.scan(bytes, filename, mime, opts)` consumes the engine NDJSON stream via `res.body.getReader()`. New `ScanPipeline` orchestrates upload → engine stream → DB persistence, tracking `path → file_id` so findings join to the right file row. New `/v1/scan/*` route group: `POST /jobs`, `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/stream` (SSE), `GET /jobs/:id/files`, `GET /jobs/:id/findings` (severity + entity_type filter + pagination), `GET /jobs/:id/findings.csv`, `DELETE /jobs/:id`. RBAC via `requires('scan', viewer|operator|admin)`. New `SCAN_MAX_UPLOAD_BYTES` env (default 100 MB).
+- **Admin SPA** — new top-nav entry **Scan** (visible per `me.roles.scan`). New `ScanView`: dropzone, history table with per-severity counters, job detail with status pill, findings table with severity + entity_type filters, **Export CSV** button, **Delete** for operator+.
+- **Tests** — 5 new engine scan tests (plain text + CSV + zip recursion + summary aggregation + skipped unsupported MIME) and 7 new gateway integration tests (auth gate, RBAC gate, end-to-end drain, severity filter, cross-user 404, cascade delete, engine failure). 411 tests pass overall (5 client + 8 admin + 213 schema + 185 gateway).
+
+### Deferred to v1.9
+
+- ImagePdfScanner (rasterize + OCR via existing engine pipeline)
+- Email scanners (eml / mbox; pst flag-gated behind `libpff-python`)
+- Bulk-redact integration (Scan finding → Redact job link)
+- Suppression UX with audit
+- Scheduled scans (`scheduled_scans` table + arq cron + SMTP / webhook alerts)
+- Compare-runs view
+- xls (legacy) / docx / odf scanners
+
+### Operator notes
+
+- Engine image grows ~30 MB (openpyxl + pypdf + python-multipart wheels).
+- New schema migration runs automatically on container start (`MIGRATIONS_AUTO=true`).
+- No new system packages required.
+- Findings table is partial-indexed on `(job_id, severity)` for fast severity-filtered reads at scale.
+
 ## [1.7.0] — 2026-05-19
 
 ### Added — Phase 17 v1.7: Redact polish (bundle + retry + batch progress)

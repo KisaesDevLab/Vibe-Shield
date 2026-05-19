@@ -39,6 +39,16 @@ dependencies = [
     # v1.5: PDF rasterization. Requires poppler-utils in the runtime
     # image (Dockerfile installs it).
     "pdf2image==1.17.0",
+    # v1.8 (Phase 26): Module 2 (Scan) scanners.
+    # openpyxl reads xlsx workbooks without Excel. pypdf extracts the
+    # text layer from born-digital PDFs (image-PDF scanning goes via
+    # the v1.5 pdf2image + Tesseract path in v1.9).
+    "openpyxl==3.1.5",
+    "pypdf==5.1.0",
+    # Multipart upload support for /scan (FastAPI's UploadFile needs
+    # this; /redact-* still uses base64 JSON so it never pulled the
+    # dep in).
+    "python-multipart==0.0.20",
 ]
 
 [dependency-groups]
@@ -80,7 +90,7 @@ disallow_untyped_defs = true
 exclude = ["tests/fixtures"]
 # presidio + spacy ship without complete type stubs; treat as untyped imports.
 [[tool.mypy.overrides]]
-module = ["presidio_analyzer.*", "presidio_anonymizer.*", "spacy.*", "pytesseract.*", "pyzbar.*", "cv2.*"]
+module = ["presidio_analyzer.*", "presidio_anonymizer.*", "spacy.*", "pytesseract.*", "pyzbar.*", "cv2.*", "openpyxl.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

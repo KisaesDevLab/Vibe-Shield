@@ -57,6 +57,13 @@
       "when": 1747785600000,
       "tag": "0007_redact_batches",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1747872000000,
+      "tag": "0008_scan_jobs",
+      "breakpoints": true
     }
   ]
 }

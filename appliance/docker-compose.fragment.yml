@@ -34,7 +34,7 @@ services:
   # Internal-only. No external port. Reachable on the internal Docker
   # network as `vibe-shield-engine:8000`.
   vibe-shield-engine:
-    image: ghcr.io/kisaesdevlab/vibe-shield-engine:${VIBE_SHIELD_VERSION:-v1.7.0}
+    image: ghcr.io/kisaesdevlab/vibe-shield-engine:${VIBE_SHIELD_VERSION:-v1.8.0}
     container_name: vibe-shield-engine
     restart: unless-stopped
     environment:
@@ -65,7 +65,7 @@ services:
   # before starting the server. Set to "false" if you prefer to run
   # migrations as a separate one-shot job for blue-green control.
   vibe-shield-gateway:
-    image: ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.7.0}
+    image: ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.8.0}
     container_name: vibe-shield-gateway
     restart: unless-stopped
     environment:
@@ -106,6 +106,8 @@ services:
       REDACT_JOBS_DIR: /var/lib/vibe-shield/redact/jobs
       REDACT_MAX_UPLOAD_BYTES: ${VIBE_SHIELD_REDACT_MAX_UPLOAD_BYTES:-52428800}
       REDACT_PURGE_INTERVAL_MS: ${VIBE_SHIELD_REDACT_PURGE_INTERVAL_MS:-3600000}
+      # Phase 26 v1.8 — Scan module per-upload cap.
+      SCAN_MAX_UPLOAD_BYTES: ${VIBE_SHIELD_SCAN_MAX_UPLOAD_BYTES:-104857600}
     volumes:
       # Phase 17 v1.4 — persistent storage for per-job artifacts
       # (source upload, redacted PDF, extracted MD/JSON, audit log).
@@ -137,7 +139,7 @@ services:
   # nginx. Vibe-Appliance operators ignore this — the appliance's per-app
   # env file supplies the right value automatically.
   vibe-shield-admin:
-    image: ghcr.io/kisaesdevlab/vibe-shield-admin:${VIBE_SHIELD_VERSION:-v1.7.0}
+    image: ghcr.io/kisaesdevlab/vibe-shield-admin:${VIBE_SHIELD_VERSION:-v1.8.0}
     container_name: vibe-shield-admin
     restart: unless-stopped
     environment:

@@ -12,6 +12,55 @@
  * on either side.
  */
 
+/**
+ * Scan NDJSON event shapes — Phase 26 (v1.8).
+ *
+ * The engine emits one of four event types per line. Discriminated
+ * union so the pipeline can switch on ``type``.
+ */
+export interface ScanFileScanned {
+  type: 'file_scanned';
+  path: string;
+  mime: string;
+  size_bytes: number;
+  sha256: string;
+}
+
+export interface ScanFileSkipped {
+  type: 'file_skipped';
+  path: string;
+  mime: string;
+  size_bytes: number;
+  sha256: string;
+  reason: string;
+}
+
+export interface ScanFinding {
+  type: 'finding';
+  path: string;
+  entity_type: string;
+  severity: 'low' | 'medium' | 'high';
+  location: string;
+  snippet_redacted: string;
+  sample_hash: string;
+}
+
+export interface ScanSummary {
+  type: 'summary';
+  source_kind: 'file' | 'archive';
+  files_count: number;
+  findings_count: number;
+  findings_high: number;
+  findings_medium: number;
+  findings_low: number;
+}
+
+export type ScanEvent =
+  | ScanFileScanned
+  | ScanFileSkipped
+  | ScanFinding
+  | ScanSummary;
+
 export class EngineUnreachableError extends Error {
   override readonly name = 'EngineUnreachableError';
 }
@@ -277,6 +326,119 @@ export class EngineClient {
       if (err instanceof Error && err.name === 'AbortError') {
         throw new EngineUnreachableError(
           `engine /redact-pdf timed out after ${timeoutMs.toString()}ms`,
+        );
+      }
+      throw new EngineUnreachableError(
+        err instanceof Error ? err.message : 'unknown',
+      );
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  /**
+   * v1.8 — Module 2 (Scan). Stream a file (or zip archive) to the
+   * engine's ``/scan`` endpoint and consume the NDJSON response.
+   * Calls back per parsed event (file_scanned / file_skipped /
+   * finding / summary). Errors mid-stream throw EngineFailureError.
+   *
+   * The engine endpoint is multipart — `file` (the raw upload) and
+   * `source_kind` ('file' | 'archive').
+   */
+  async scan(
+    fileBytes: Buffer,
+    filename: string,
+    mime: string,
+    opts: {
+      sourceKind?: 'file' | 'archive';
+      timeoutMs?: number;
+      correlationId?: string;
+      onEvent?: (event: ScanEvent) => void;
+    } = {},
+  ): Promise<ScanSummary> {
+    const ctl = new AbortController();
+    const timeoutMs = opts.timeoutMs ?? 30 * 60_000;
+    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const form = new FormData();
+      form.append(
+        'file',
+        new Blob([new Uint8Array(fileBytes)], { type: mime }),
+        filename,
+      );
+      form.append('source_kind', opts.sourceKind ?? 'file');
+      const headers: Record<string, string> = {};
+      if (opts.correlationId !== undefined) {
+        headers['x-correlation-id'] = opts.correlationId;
+      }
+      const res = await this.fetchImpl(`${this.baseUrl}/scan`, {
+        method: 'POST',
+        headers,
+        body: form,
+        signal: ctl.signal,
+      });
+      if (!res.ok) {
+        throw new EngineFailureError(
+          `engine /scan returned ${res.status.toString()}`,
+          res.status,
+        );
+      }
+      if (res.body === null) {
+        throw new EngineUnreachableError('engine /scan returned no body');
+      }
+      let summary: ScanSummary | undefined;
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      const reader = res.body.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl = buffer.indexOf('\n');
+        while (nl !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          nl = buffer.indexOf('\n');
+          if (line.length === 0) continue;
+          let parsed: { type?: string; message?: string };
+          try {
+            parsed = JSON.parse(line) as typeof parsed;
+          } catch {
+            throw new EngineFailureError(
+              'engine /scan emitted invalid JSON line',
+              500,
+            );
+          }
+          if (parsed.type === 'error') {
+            throw new EngineFailureError(
+              parsed.message ?? 'engine /scan failed mid-stream',
+              500,
+            );
+          }
+          if (parsed.type === 'summary') {
+            summary = parsed as unknown as ScanSummary;
+          }
+          if (opts.onEvent !== undefined) {
+            try {
+              opts.onEvent(parsed as unknown as ScanEvent);
+            } catch {
+              // best-effort; don't abort the stream
+            }
+          }
+        }
+      }
+      if (summary === undefined) {
+        throw new EngineFailureError(
+          'engine /scan stream ended without summary',
+          500,
+        );
+      }
+      return summary;
+    } catch (err) {
+      if (err instanceof EngineFailureError) throw err;
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new EngineUnreachableError(
+          `engine /scan timed out after ${timeoutMs.toString()}ms`,
         );
       }
       throw new EngineUnreachableError(

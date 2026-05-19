@@ -21,6 +21,11 @@ const items: Item[] = [
     label: 'Redact',
     visible: (me) => me.is_org_admin || me.roles.redact !== undefined,
   },
+  {
+    id: 'scan',
+    label: 'Scan',
+    visible: (me) => me.is_org_admin || me.roles.scan !== undefined,
+  },
   { id: 'keys', label: 'API Keys' },
   { id: 'audit', label: 'Audit Log' },
   { id: 'misses', label: 'Recognizer Misses' },
