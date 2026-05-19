@@ -67,18 +67,27 @@ export function RedactView({ client, me }: Props): JSX.Element {
     void refresh();
   }, [client]);
 
-  const handleFile = async (file: File): Promise<void> => {
+  const handleFiles = async (files: File[]): Promise<void> => {
     setUploadError(null);
-    if (!ACCEPT_MIMES.has(file.type)) {
-      setUploadError(
-        `Unsupported file type: ${file.type || 'unknown'}. Accepts PNG, JPEG, WebP, TIFF, BMP, or PDF.`,
-      );
-      return;
+    for (const f of files) {
+      if (!ACCEPT_MIMES.has(f.type)) {
+        setUploadError(
+          `Unsupported file type: ${f.type || 'unknown'} (${f.name}). Accepts PNG, JPEG, WebP, TIFF, BMP, or PDF.`,
+        );
+        return;
+      }
     }
     setUploading(true);
     try {
-      const job = await client.uploadRedact(file);
-      setSelectedId(job.id);
+      // v1.6 — single file uses the existing sync/async path; ≥2
+      // files goes through the bulk endpoint.
+      if (files.length === 1) {
+        const job = await client.uploadRedact(files[0]!);
+        setSelectedId(job.id);
+      } else {
+        const { jobs } = await client.uploadRedactBatch(files);
+        if (jobs.length > 0) setSelectedId(jobs[0]!.id);
+      }
       await refresh();
     } catch (e) {
       setUploadError(
@@ -90,16 +99,18 @@ export function RedactView({ client, me }: Props): JSX.Element {
   };
 
   const onPick = (e: ChangeEvent<HTMLInputElement>): void => {
-    const f = e.target.files?.[0];
-    if (f !== undefined) void handleFile(f);
+    const list = e.target.files;
+    if (list !== null && list.length > 0) {
+      void handleFiles(Array.from(list));
+    }
     e.target.value = '';
   };
 
   const onDrop = (e: DragEvent<HTMLDivElement>): void => {
     e.preventDefault();
     setDragOver(false);
-    const f = e.dataTransfer.files[0];
-    if (f !== undefined) void handleFile(f);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) void handleFiles(files);
   };
 
   const selected = history.find((j) => j.id === selectedId) ?? null;
@@ -159,21 +170,22 @@ export function RedactView({ client, me }: Props): JSX.Element {
           onDrop={onDrop}
         >
           <p style={{ margin: '0 0 8px 0', fontSize: 16, fontWeight: 500 }}>
-            {uploading ? 'Redacting…' : 'Drop an image here'}
+            {uploading ? 'Redacting…' : 'Drop one or more files here'}
           </p>
           <p className="muted" style={{ margin: '0 0 16px 0', fontSize: 13 }}>
-            PNG, JPEG, WebP, TIFF, BMP, or PDF · up to 50 MB
+            PNG, JPEG, WebP, TIFF, BMP, or PDF · up to 50 MB each · drop a folder for bulk
           </p>
           <button
             disabled={uploading}
             onClick={() => fileInput.current?.click()}
           >
-            {uploading ? 'Working…' : 'Or choose a file'}
+            {uploading ? 'Working…' : 'Or choose file(s)'}
           </button>
           <input
             ref={fileInput}
             type="file"
             accept={ACCEPT}
+            multiple
             style={{ display: 'none' }}
             onChange={onPick}
           />

@@ -4,6 +4,38 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-05-18
+
+### Added — Phase 17 v1.6: per-page engine streaming + bulk-redact
+
+Two UX-meaningful additions to the Redact module: live per-page SSE progress that actually fires *during* engine work (not after) for large PDFs, and bulk-upload of up to 50 files in one batch.
+
+- **Engine** — `POST /redact-pdf` converted to a streaming `application/x-ndjson` response. One `{"type":"page", ...}` line per page emitted **as soon as the engine finishes that page**, followed by a `{"type":"summary", ...}` line with `pdf_sha256` + `pages_count` + concatenated token map. Mid-stream errors emit a `{"type":"error", ...}` line; the gateway treats it as a job failure. Fail-closed on bad PDF / missing poppler stays intact (raises before the stream opens).
+- **Gateway stream consumer** — `EngineClient.redactPdf(bytes, opts)` now reads NDJSON line-by-line via `res.body.getReader()`, fires the optional `onPage(page)` callback per page, and aggregates into the existing `RedactPdfResponse` shape. 30-min timeout still bounds the whole call.
+- **Pipeline** — `RedactPipeline` PDF path uses `onPage` to write per-page PNGs and emit `page_completed` SSE events the moment each page lands, instead of batching at the end. `markRunning(pageCount)` fires on the first page so the SPA progress bar can show the right denominator immediately.
+- **Schema** — migration `0007_redact_batches.sql` adds `vs_redact_batches` (id, user_id, name, total_jobs, created_at) + nullable `vs_redact_jobs.batch_id` FK. Forward-compatible: existing single-file jobs keep `batch_id = NULL`.
+- **Vault** — `RedactBatchStore` (create/findById/listForUser). `RedactJobStore.listForBatch(batchId)`. `RedactJobRecord` gains `batchId: string | null`.
+- **Gateway routes** — `POST /v1/redact/batches` accepts up to 50 files in one multipart upload (`files[]`). Creates one batch row + one job per file (all sharing `batch_id`), responds 202 with the batch + jobs array, drains the pipeline sequentially in the background (engine is heavy; parallel would OOM). `GET /v1/redact/batches` lists own batches; `GET /v1/redact/batches/:id` returns the batch + aggregated `{pending,running,completed,failed}` summary + per-job array. Org_admin / redact_admin see across users; everyone else is owner-scoped.
+- **Admin SPA** — `RedactView` dropzone accepts multiple files (drag a folder works in modern browsers). Single file uses the existing sync/async path; ≥2 files goes through the bulk endpoint. New `RedactBatchRow` type; `uploadRedactBatch(files, name)` client method.
+- **Config** — no new env vars; the existing `REDACT_MAX_UPLOAD_BYTES` applies per file in a batch.
+
+### Verification
+
+**400 tests pass** locally against Postgres 16 + Redis 7 (5 client + 8 admin + 213 schema + 174 gateway including 14 redact integration tests; 3 new for v1.6):
+
+- Bulk upload of 3 PNGs → batch created + 3 jobs sharing `batch_id` → sequential drain completes → `GET /batches/:id` returns `{summary: {completed: 3, failed: 0, pending: 0, running: 0}}`
+- Non-owner gets 404 on cross-user batch read (existence hidden)
+- Streaming `redactPdf` consumer: fake NDJSON stream with 2 pages + summary → `onPage` fires per page in order → aggregated response carries `pdf_sha256` and `pages_count: 2`
+
+Plus the existing v1.5 PDF test now exercises the streaming path via the updated stub.
+
+### Operator notes
+
+- Engine image grew slightly to support streaming response (FastAPI `StreamingResponse` is already a dep). No new system packages.
+- The bulk endpoint enforces the same per-file size cap as the single endpoint. Pre-upload validation in the SPA rejects unsupported MIMEs before the network hop.
+- The pipeline still serializes batch jobs through the engine; this is intentional given engine OCR + face detection is CPU-heavy. Future v1.7 may introduce a small concurrency limit (engine permitting).
+- Existing v1.4 / v1.5 jobs are forward-compatible: `batch_id` is NULL, batch endpoints simply don't return them. No migration of historical data.
+
 ## [1.5.0] — 2026-05-18
 
 ### Added — Phase 17 v1.5: PDF redaction + SSE progress + artifact-purge cron

@@ -82,6 +82,7 @@ export interface RedactImageResponse {
 /** v1.5 — per-page entry from /redact-pdf. */
 export interface RedactPdfPage {
   page_number: number;
+  total_pages?: number;
   masked_image_sha256: string;
   masked_image_base64: string;
   redacted_text: string;
@@ -89,6 +90,14 @@ export interface RedactPdfPage {
   masked_regions: EngineMaskedRegion[];
 }
 
+export interface RedactPdfSummary {
+  pdf_sha256: string;
+  pages_count: number;
+  tokens_concatenated: EngineTokenEntry[];
+}
+
+/** v1.6 — collected outcome of a streaming /redact-pdf call. The
+ *  consumer can also subscribe to per-page events as they arrive. */
 export interface RedactPdfResponse {
   pdf_sha256: string;
   pages_count: number;
@@ -146,25 +155,136 @@ export class EngineClient {
   }
 
   /**
-   * v1.5 — redact a multi-page PDF. ``pdfBytes`` is the raw PDF; the
-   * engine rasterizes via poppler/pdf2image at the requested DPI and
-   * runs the image pipeline per page.
+   * v1.6 — streaming PDF redaction. The engine emits one NDJSON line
+   * per page as it finishes, plus a final ``summary`` line. The
+   * caller receives each page via ``onPage`` in real time; the
+   * resolved value carries the aggregated result for persistence.
    *
-   * Timeout scales with page count: ~30s per page upper bound. For a
-   * 50-page PDF that's 25 minutes — long but bounded; clients should
-   * use the async + SSE path for documents over ~5 pages.
+   * ``onPage`` is best-effort: a throw is logged but doesn't abort
+   * the stream. The pipeline uses it to emit SSE ``page_completed``
+   * events to subscribers.
+   *
+   * Timeout still bounds the whole stream (~30 min for huge PDFs).
    */
   async redactPdf(
     pdfBytes: Buffer,
-    opts: { dpi?: number; timeoutMs?: number; correlationId?: string } = {},
+    opts: {
+      dpi?: number;
+      timeoutMs?: number;
+      correlationId?: string;
+      onPage?: (page: RedactPdfPage) => void;
+    } = {},
   ): Promise<RedactPdfResponse> {
     const dpi = opts.dpi ?? 200;
-    return this.post<RedactPdfResponse>(
-      '/redact-pdf',
-      { pdf_base64: pdfBytes.toString('base64'), dpi },
-      opts.correlationId,
-      opts.timeoutMs ?? 30 * 60_000,
-    );
+    const ctl = new AbortController();
+    const timeoutMs = opts.timeoutMs ?? 30 * 60_000;
+    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const headers: Record<string, string> = {
+        'content-type': 'application/json',
+      };
+      if (opts.correlationId !== undefined) {
+        headers['x-correlation-id'] = opts.correlationId;
+      }
+      const res = await this.fetchImpl(`${this.baseUrl}/redact-pdf`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ pdf_base64: pdfBytes.toString('base64'), dpi }),
+        signal: ctl.signal,
+      });
+      if (!res.ok) {
+        throw new EngineFailureError(
+          `engine /redact-pdf returned ${res.status.toString()}`,
+          res.status,
+        );
+      }
+      if (res.body === null) {
+        throw new EngineUnreachableError('engine /redact-pdf returned no body');
+      }
+      const pages: RedactPdfPage[] = [];
+      let summary: RedactPdfSummary | undefined;
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      const reader = res.body.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl = buffer.indexOf('\n');
+        while (nl !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          nl = buffer.indexOf('\n');
+          if (line.length === 0) continue;
+          let parsed: { type?: string; message?: string } & RedactPdfPage &
+            RedactPdfSummary;
+          try {
+            parsed = JSON.parse(line) as typeof parsed;
+          } catch {
+            throw new EngineFailureError(
+              `engine /redact-pdf emitted invalid JSON line`,
+              500,
+            );
+          }
+          if (parsed.type === 'page') {
+            const page: RedactPdfPage = {
+              page_number: parsed.page_number,
+              masked_image_sha256: parsed.masked_image_sha256,
+              masked_image_base64: parsed.masked_image_base64,
+              redacted_text: parsed.redacted_text,
+              tokens: parsed.tokens,
+              masked_regions: parsed.masked_regions,
+              ...(parsed.total_pages !== undefined
+                ? { total_pages: parsed.total_pages }
+                : {}),
+            };
+            pages.push(page);
+            if (opts.onPage !== undefined) {
+              try {
+                opts.onPage(page);
+              } catch {
+                // best-effort; don't abort the stream
+              }
+            }
+          } else if (parsed.type === 'summary') {
+            summary = {
+              pdf_sha256: parsed.pdf_sha256,
+              pages_count: parsed.pages_count,
+              tokens_concatenated: parsed.tokens_concatenated,
+            };
+          } else if (parsed.type === 'error') {
+            throw new EngineFailureError(
+              parsed.message ?? 'engine /redact-pdf failed mid-stream',
+              500,
+            );
+          }
+        }
+      }
+      if (summary === undefined) {
+        throw new EngineFailureError(
+          'engine /redact-pdf stream ended without summary',
+          500,
+        );
+      }
+      return {
+        pdf_sha256: summary.pdf_sha256,
+        pages_count: summary.pages_count,
+        pages,
+        tokens_concatenated: summary.tokens_concatenated,
+      };
+    } catch (err) {
+      if (err instanceof EngineFailureError) throw err;
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new EngineUnreachableError(
+          `engine /redact-pdf timed out after ${timeoutMs.toString()}ms`,
+        );
+      }
+      throw new EngineUnreachableError(
+        err instanceof Error ? err.message : 'unknown',
+      );
+    } finally {
+      clearTimeout(t);
+    }
   }
 
   async analyze(
