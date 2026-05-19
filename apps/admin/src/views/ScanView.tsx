@@ -4,6 +4,7 @@ import {
   AdminApiError,
   type AdminClient,
   type MeResponse,
+  type ScanCompareResponse,
   type ScanFindingRow,
   type ScanJobRow,
 } from '../api.js';
@@ -91,6 +92,25 @@ export function ScanView({ client, me }: Props): JSX.Element {
   };
 
   const selected = history.find((j) => j.id === selectedId) ?? null;
+  const [compareWith, setCompareWith] = useState<string>('');
+  const [compareResult, setCompareResult] = useState<ScanCompareResponse | null>(null);
+  const [compareErr, setCompareErr] = useState<string | null>(null);
+
+  const runCompare = async (): Promise<void> => {
+    if (selectedId === null || compareWith === '' || compareWith === selectedId) {
+      setCompareErr('pick a different scan run to compare against');
+      return;
+    }
+    try {
+      const res = await client.compareScans(compareWith, selectedId);
+      setCompareResult(res);
+      setCompareErr(null);
+    } catch (e) {
+      setCompareErr(
+        e instanceof AdminApiError ? `${e.status}: ${e.message}` : 'compare failed',
+      );
+    }
+  };
 
   const deleteJob = async (id: string): Promise<void> => {
     if (
@@ -183,6 +203,95 @@ export function ScanView({ client, me }: Props): JSX.Element {
         />
       )}
 
+      {selected !== null && history.length >= 2 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h4 style={{ margin: '0 0 8px 0' }}>Compare runs</h4>
+          <p className="muted" style={{ margin: '0 0 8px 0', fontSize: 12 }}>
+            Diff the currently-selected scan against another. Findings are
+            keyed by SHA-256(cleartext) so a finding present in both runs
+            counts as <em>persistent</em>; a new finding is <em>added</em>;
+            a finding that disappeared is <em>removed</em>.
+          </p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <select
+              value={compareWith}
+              onChange={(e) => setCompareWith(e.target.value)}
+            >
+              <option value="">— pick a baseline —</option>
+              {history
+                .filter((j) => j.id !== selected.id)
+                .map((j) => (
+                  <option key={j.id} value={j.id}>
+                    {j.source_name} ({new Date(j.created_at).toLocaleDateString()})
+                  </option>
+                ))}
+            </select>
+            <button onClick={() => void runCompare()} disabled={compareWith === ''}>
+              Run compare
+            </button>
+          </div>
+          {compareErr !== null && (
+            <p className="error" style={{ marginTop: 8 }}>
+              {compareErr}
+            </p>
+          )}
+          {compareResult !== null && (
+            <div style={{ marginTop: 12, fontSize: 13 }}>
+              <p>
+                Baseline <code>{compareResult.a.source_name}</code> vs current{' '}
+                <code>{compareResult.b.source_name}</code>:
+              </p>
+              <ul>
+                <li>
+                  <strong style={{ color: '#991b1b' }}>
+                    {compareResult.added.length.toString()} added
+                  </strong>
+                </li>
+                <li>
+                  <strong style={{ color: '#065f46' }}>
+                    {compareResult.removed.length.toString()} removed
+                  </strong>
+                </li>
+                <li className="muted">
+                  {compareResult.persistent.length.toString()} persistent
+                </li>
+              </ul>
+              {compareResult.added.length > 0 && (
+                <details>
+                  <summary style={{ cursor: 'pointer', fontSize: 12 }}>
+                    Show added findings
+                  </summary>
+                  <table style={{ marginTop: 8 }}>
+                    <thead>
+                      <tr>
+                        <th>Entity</th>
+                        <th>Severity</th>
+                        <th>Path</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {compareResult.added.map((h) => (
+                        <tr key={`${h.path}-${h.sample_hash}`}>
+                          <td>
+                            <code style={{ fontSize: 12 }}>{h.entity_type}</code>
+                          </td>
+                          <td>
+                            <SeverityPill severity={h.severity} />
+                          </td>
+                          <td className="muted" style={{ fontSize: 12 }}>
+                            {h.path}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       <h3 style={{ marginTop: 32 }}>History</h3>
       {loadError !== null && <p className="error">{loadError}</p>}
       {history.length === 0 && !loadError && (
@@ -245,7 +354,7 @@ export function ScanView({ client, me }: Props): JSX.Element {
 function ScanDetail({
   job,
   client,
-  canUpload: _canUpload,
+  canUpload,
   onUpdated,
 }: {
   job: ScanJobRow;
@@ -258,7 +367,13 @@ function ScanDetail({
     'all' | 'low' | 'medium' | 'high'
   >('all');
   const [entityFilter, setEntityFilter] = useState<string>('');
+  const [includeSuppressed, setIncludeSuppressed] = useState(false);
   const [findingsErr, setFindingsErr] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<
+    | { created: number; skipped: { path: string; reason: string }[] }
+    | null
+  >(null);
 
   // Poll the job + findings every 2s while running; stop on terminal.
   useEffect(() => {
@@ -268,8 +383,9 @@ function ScanDetail({
         const list = await client.listScanFindings(job.id, {
           ...(severityFilter !== 'all' ? { severity: severityFilter } : {}),
           ...(entityFilter !== '' ? { entity_type: entityFilter } : {}),
+          ...(includeSuppressed ? { include_suppressed: true } : {}),
           limit: 500,
-        });
+        } as Parameters<typeof client.listScanFindings>[1]);
         if (stopped) return;
         setFindings(list);
         setFindingsErr(null);
@@ -296,7 +412,52 @@ function ScanDetail({
     return () => {
       stopped = true;
     };
-  }, [job.id, job.status, severityFilter, entityFilter]);
+  }, [job.id, job.status, severityFilter, entityFilter, includeSuppressed]);
+
+  const toggleSuppression = async (f: ScanFindingRow): Promise<void> => {
+    try {
+      if (f.suppressed) {
+        await client.unsuppressFinding(f.id);
+      } else {
+        const reason =
+          window.prompt('Reason for suppressing this finding (optional):') ?? undefined;
+        await client.suppressFinding(f.id, reason);
+      }
+      // Refresh the findings list inline.
+      const list = await client.listScanFindings(job.id, {
+        ...(severityFilter !== 'all' ? { severity: severityFilter } : {}),
+        ...(entityFilter !== '' ? { entity_type: entityFilter } : {}),
+        ...(includeSuppressed ? { include_suppressed: true } : {}),
+        limit: 500,
+      } as Parameters<typeof client.listScanFindings>[1]);
+      setFindings(list);
+    } catch (e) {
+      setFindingsErr(
+        e instanceof AdminApiError ? `${e.status}: ${e.message}` : 'suppression failed',
+      );
+    }
+  };
+
+  const bulkRedact = async (): Promise<void> => {
+    if (
+      !window.confirm(
+        'Queue a Redact job for every flagged file? This only works for filesystem-scoped scheduled scans; one-shot uploads will be skipped.',
+      )
+    ) {
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      const res = await client.bulkRedactScan(job.id);
+      setBulkResult({ created: res.created.length, skipped: res.skipped });
+    } catch (e) {
+      setFindingsErr(
+        e instanceof AdminApiError ? `${e.status}: ${e.message}` : 'bulk-redact failed',
+      );
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   return (
     <div className="card" style={{ marginTop: 16 }}>
@@ -326,7 +487,7 @@ function ScanDetail({
 
       {job.status === 'completed' && (
         <div style={{ marginTop: 16 }}>
-          <div style={{ display: 'flex', gap: 16, alignItems: 'baseline' }}>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'baseline', flexWrap: 'wrap' }}>
             <strong>{job.findings_count.toString()}</strong>
             <span className="muted">
               finding{job.findings_count === 1 ? '' : 's'} across {job.files_count.toString()}{' '}
@@ -337,10 +498,34 @@ function ScanDetail({
                 Export CSV
               </button>
             </a>
+            {canUpload && job.findings_count > 0 && (
+              <button
+                className="secondary"
+                disabled={bulkBusy}
+                style={{ fontSize: 12 }}
+                onClick={() => void bulkRedact()}
+              >
+                {bulkBusy ? 'Queueing…' : 'Bulk-redact flagged files'}
+              </button>
+            )}
           </div>
           <div style={{ marginTop: 12 }}>
             <SeverityCounters job={job} verbose />
           </div>
+          {bulkResult !== null && (
+            <div className="card" style={{ marginTop: 12, fontSize: 13 }}>
+              <strong>Bulk-redact:</strong> {bulkResult.created.toString()} job
+              {bulkResult.created === 1 ? '' : 's'} queued.
+              {bulkResult.skipped.length > 0 && (
+                <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+                  Skipped {bulkResult.skipped.length.toString()} file
+                  {bulkResult.skipped.length === 1 ? '' : 's'}:
+                  {' '}
+                  {Array.from(new Set(bulkResult.skipped.map((s) => s.reason))).join(', ')}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -348,7 +533,7 @@ function ScanDetail({
         job.status === 'running' ||
         job.findings_count > 0) && (
         <>
-          <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+          <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
             <select
               value={severityFilter}
               onChange={(e) =>
@@ -367,6 +552,14 @@ function ScanDetail({
               onChange={(e) => setEntityFilter(e.target.value)}
               style={{ flex: 1 }}
             />
+            <label className="muted" style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <input
+                type="checkbox"
+                checked={includeSuppressed}
+                onChange={(e) => setIncludeSuppressed(e.target.checked)}
+              />
+              Show suppressed
+            </label>
           </div>
 
           {findingsErr !== null && (
@@ -386,13 +579,31 @@ function ScanDetail({
                   <th>Severity</th>
                   <th>Location</th>
                   <th>Context (redacted)</th>
+                  {canUpload && <th></th>}
                 </tr>
               </thead>
               <tbody>
                 {findings.map((f) => (
-                  <tr key={f.id}>
+                  <tr
+                    key={f.id}
+                    style={{ opacity: f.suppressed ? 0.5 : 1 }}
+                  >
                     <td>
                       <code style={{ fontSize: 12 }}>{f.entity_type}</code>
+                      {f.suppressed && (
+                        <span
+                          style={{
+                            marginLeft: 6,
+                            fontSize: 10,
+                            padding: '1px 5px',
+                            background: '#e5e7eb',
+                            color: '#374151',
+                            borderRadius: 3,
+                          }}
+                        >
+                          suppressed
+                        </span>
+                      )}
                     </td>
                     <td>
                       <SeverityPill severity={f.severity} />
@@ -403,6 +614,17 @@ function ScanDetail({
                     <td style={{ fontSize: 12, fontFamily: 'monospace' }}>
                       {f.snippet_redacted}
                     </td>
+                    {canUpload && (
+                      <td>
+                        <button
+                          className="secondary"
+                          style={{ fontSize: 11 }}
+                          onClick={() => void toggleSuppression(f)}
+                        >
+                          {f.suppressed ? 'Unsuppress' : 'Suppress'}
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

@@ -95,6 +95,12 @@ export const scanFindings = pgTable(
     /** SHA-256(cleartext) — dedupe + audit without storing PII. */
     sampleHash: text('sample_hash').notNull(),
     suppressed: boolean('suppressed').notNull().default(false),
+    /** v1.9 — actor who suppressed, timestamp, optional reason. */
+    suppressedBy: uuid('suppressed_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    suppressedAt: timestamp('suppressed_at', { withTimezone: true }),
+    suppressedReason: text('suppressed_reason'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),

@@ -11,11 +11,13 @@ import { PoliciesView } from './views/PoliciesView.js';
 import { PromptsView } from './views/PromptsView.js';
 import { RedactView } from './views/RedactView.js';
 import { ScanView } from './views/ScanView.js';
+import { ScheduledScansView } from './views/ScheduledScansView.js';
 import { UsersView } from './views/UsersView.js';
 
 export type ViewName =
   | 'redact'
   | 'scan'
+  | 'scheduled-scans'
   | 'keys'
   | 'audit'
   | 'misses'
@@ -111,6 +113,9 @@ export function App(): JSX.Element {
       <main className="content">
         {view === 'redact' && <RedactView client={client} me={me} />}
         {view === 'scan' && <ScanView client={client} me={me} />}
+        {view === 'scheduled-scans' && (
+          <ScheduledScansView client={client} me={me} />
+        )}
         {view === 'keys' && <ApiKeysView client={client} />}
         {view === 'audit' && <AuditView client={client} />}
         {view === 'misses' && <RecognizerMissesView client={client} />}

@@ -4,6 +4,55 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-05-19
+
+### Added — Phase 26 (Module 2: Scan) completion
+
+Every deferred v1.8 item lands here. PST (Outlook) format is the one carve-out — pushed to v1.10 because the `libpff-python` binding pulls a native C library that's painful across the appliance's distro matrix.
+
+- **Engine — ImagePdfScanner (hybrid)** — replaces v1.8's text-only PDF scanner. Tries the text layer per page; for pages with no text, rasterizes (pdf2image) and OCRs (Tesseract) before analysis. Findings keep the same `page=N,char=X-Y` location format either way. Born-digital + scanned-and-glued PDFs both produce findings now.
+- **Engine — EmlScanner + MboxScanner** — RFC 2822 single messages and Unix mbox archives. Walks Subject / From / To / Cc / body (text/plain preferred; HTML stripped to text) and recursively dispatches each attachment back through the scanner registry (a CSV attachment to an email shows up as findings under `message.eml!clients.csv`). Mbox messages carry a `message=N` prefix in the location string.
+- **Bulk-redact integration** — `POST /v1/scan/jobs/:id/redact` creates one Redact job per flagged file via a `ScanFileFetcher` (filesystem-scoped only in v1.9). New `vs_scan_redact_links` table records the `(scan_file, redact_job)` pair. Companion `GET /v1/scan/jobs/:id/redact-links` returns the linkage. SPA shows a "Bulk-redact flagged files" button on completed scan jobs; results banner reports created vs. skipped (with reason).
+- **Suppression UX** — `PUT /v1/scan/findings/:id/suppress` + `DELETE` toggle (operator+). New `suppressed_by`, `suppressed_at`, `suppressed_reason` columns on `vs_scan_findings`. Findings list hides suppressed by default; `?include_suppressed=true` reveals. Compare-runs ignores suppressed findings entirely (operator-acknowledged). SPA per-row Suppress / Unsuppress button + "Show suppressed" checkbox + visual dimming.
+- **Scheduled scans + alerts** — new `vs_scheduled_scans` table (id, user_id, name, source_kind, source_ref, cron_expression, enabled, last_run_*, next_run_at, notify_emails, webhook_url, webhook_secret, alert_min_severity). New `/v1/scan/scheduled/*` CRUD route group. Built-in 5-field UTC cron parser (`* / N`, lists, ranges, day-of-week). New `ScheduledScanRunner` polls due rows every 60s, enumerates the source path (up to depth 5, 200 files max per run), pipes each file through the existing ScanPipeline. New `ScheduledScanAlerter` fires SMTP (via the existing Mailer) and/or webhook (HMAC-SHA256 signed JSON) on runs whose findings meet the row's severity threshold. **Path-traversal hard rule**: refuses any source_ref that resolves outside `SCAN_ROOT`. SPA gets a new top-nav `Scheduled scans` view with create + list + enable/disable + delete.
+- **Compare-runs** — `GET /v1/scan/compare?a=:id&b=:id` returns `added` / `removed` / `persistent` findings keyed by `sample_hash`. Server-side join on the findings table; no per-finding scan. SPA picks a baseline from history and renders a diff card with collapsible added/removed lists.
+- **Mailer** — generic `send({to, subject, text})` added alongside the existing `sendMagicLink` for alert delivery. Same plaintext-only posture.
+
+### Schema
+
+- Migration `0009_scan_extensions.sql` adds `vs_scan_redact_links`, the three suppression-audit columns on `vs_scan_findings`, and `vs_scheduled_scans` with a partial index on `(next_run_at) WHERE enabled = TRUE`.
+- Drizzle: `ScheduledScanStore`, `ScanRedactLinkRecord`, extended `ScanJobStore` (`findFindingById`, `setFindingSuppressed`, `listFindingHashes`, `listFilesWithFindings`, `addRedactLink`, `listRedactLinks`, `findFilesByIds`).
+
+### Config
+
+New env vars (with manifest entries):
+
+- `SCAN_ROOT` (default `/var/lib/vibe-shield/scan/root`) — the path scheduled scans and bulk-redact are allowed to read from.
+- `SCHEDULED_SCAN_INTERVAL_MS` (default 60000) — poll cadence; 0 disables the runner.
+
+New persistent volume `vibe-shield-scan` mounted at `/var/lib/vibe-shield/scan`.
+
+### Deferred to v1.10
+
+- PST (Outlook) scanner (needs `libpff-python` native build)
+- xls (legacy binary) / docx / odf scanners
+- Multi-process scheduler lock (Redis SETNX) for HA deployments
+- Per-job archive batching for scheduled scans (today one ScanJob per file)
+
+### Tests
+
+**422 tests pass** (5 client + 8 admin + 213 schema + 196 gateway):
+
+- 2 new engine pytest tests (`eml attachment dispatches recursively`, `mbox walks multiple messages`)
+- 4 new gateway integration tests (suppression round-trip, compare-runs diff, bulk-redact 501 without fetcher, scheduled-scan CRUD)
+- 7 new cron-parser unit tests (field counts, out-of-range, daily, every-15-minutes, dow filter, lists)
+
+### Operator notes
+
+- Engine image unchanged in dep set (Tesseract, pdf2image, pypdf already shipped in v1.8). ImagePdfScanner activates the existing OCR pipeline.
+- Mount the directories you want scanned under `/var/lib/vibe-shield/scan/root` on the appliance volume. Scheduled scans cannot read anywhere else by design.
+- Webhook secrets are write-only; the API returns `webhook_secret_set: true|false` but never the secret itself. Rotate by re-PATCHing the row with a new value.
+
 ## [1.8.0] — 2026-05-19
 
 ### Added — Phase 26 (Module 2: Shield · Scan) foundation

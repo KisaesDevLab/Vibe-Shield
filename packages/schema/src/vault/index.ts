@@ -114,5 +114,16 @@ export type {
   ScanFindingRecord,
   ScanJobRecord,
   ScanJobStatus,
+  ScanRedactLinkRecord,
   ScanSeverity,
 } from './scan-job-store.js';
+
+export {
+  ScheduledScanNotFoundError,
+  ScheduledScanStore,
+} from './scheduled-scan-store.js';
+export type {
+  CreateScheduledScanInput,
+  ScheduledScanRecord,
+  UpdateScheduledScanInput,
+} from './scheduled-scan-store.js';

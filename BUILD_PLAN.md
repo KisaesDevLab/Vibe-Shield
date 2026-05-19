@@ -358,9 +358,13 @@ Tests: 9 on the registry (load + SHA stability + malformed handling), 7 on the r
 
 ---
 
-### Phase 26 — [addendum R–V] Module 2: Shield · Scan **[v1.8 foundation shipped]**
+### Phase 26 — [addendum R–V] Module 2: Shield · Scan **[v1.9 complete; v1.10 carve-outs only]**
 
-**v1.8 status** — engine `Scanner` ABC + plain text / CSV / xlsx / PDF (text-layer) / zip archive scanners; engine `POST /scan` (NDJSON stream); schema `vs_scan_jobs` + `vs_scan_files` + `vs_scan_findings`; gateway `/v1/scan/*` route group with RBAC + CSV export + SSE progress; admin SPA top-nav entry with severity-filtered findings table. **Deferred to v1.9:** ImagePdfScanner, eml/mbox/pst scanners, bulk-redact integration, suppression, scheduled scans, compare-runs view.
+**v1.8 status** — engine `Scanner` ABC + plain text / CSV / xlsx / PDF (text-layer) / zip archive scanners; engine `POST /scan` (NDJSON stream); schema `vs_scan_jobs` + `vs_scan_files` + `vs_scan_findings`; gateway `/v1/scan/*` route group with RBAC + CSV export + SSE progress; admin SPA top-nav entry with severity-filtered findings table.
+
+**v1.9 status** — hybrid PDF scanner (text + Tesseract OCR fallback); EML + MBOX email scanners with recursive attachment dispatch; bulk-redact integration via `ScanFileFetcher` + `vs_scan_redact_links`; suppression with audit (suppressed_by/at/reason); scheduled scans (`vs_scheduled_scans`, in-process cron parser, ScheduledScanRunner, SMTP + HMAC-signed webhook alerts via ScheduledScanAlerter); compare-runs by sample_hash; full SPA wiring (suppression toggle, bulk-redact button, scheduled-scan settings page, compare-runs UI).
+
+**Deferred to v1.10:** PST (Outlook) scanner (needs `libpff-python` native build); xls / docx / odf scanners; Redis-backed multi-process scheduler lock; per-batch archive bundling for scheduled runs.
 
 
 

@@ -21,6 +21,8 @@ import multer from 'multer';
 import type { Logger } from 'pino';
 import {
   ScanJobNotFoundError,
+  type AuditLogger,
+  type RedactJobStore,
   type ScanJobRecord,
   type ScanJobStore,
   type ScanSeverity,
@@ -29,10 +31,13 @@ import {
   AuthenticationError,
   InvalidRequestError,
   NotFoundError,
+  NotImplementedError,
   PermissionError,
 } from '../errors.js';
 import type { ScanPipeline } from '../scan/pipeline.js';
 import type { ScanJobEvents } from '../scan/job-events.js';
+import type { RedactPipeline } from '../redact/pipeline.js';
+import type { JobStorage } from '../redact/storage.js';
 
 export interface ScanRoutesDeps {
   jobs: ScanJobStore;
@@ -42,6 +47,33 @@ export interface ScanRoutesDeps {
   /** Per-upload byte cap. Default 100 MB (matches the engine cap for
    *  inner files; archives can carry up to 1 GB uncompressed). */
   maxUploadBytes?: number;
+  /** v1.9 — bulk-redact integration. When set, POST
+   *  /v1/scan/jobs/:id/redact creates one Redact job per flagged
+   *  file via the (path-aware) ScanFileFetcher. */
+  redactJobs?: RedactJobStore;
+  redactPipeline?: RedactPipeline;
+  redactStorage?: JobStorage;
+  /** v1.9 — caller-side fetcher that turns a vs_scan_files row's path
+   *  into the raw bytes the Redact pipeline needs. For v1.9 we only
+   *  support filesystem-rooted scheduled scans, so the implementation
+   *  reads from the appliance scheduler-root. Tests inject a stub. */
+  scanFileFetcher?: ScanFileFetcher;
+  /** v1.9 — for suppression audit rows. */
+  audit?: AuditLogger;
+}
+
+/**
+ * v1.9 — turns a stored ``vs_scan_files.path`` plus the parent
+ * scan-job context into the raw bytes the bulk-redact endpoint can
+ * hand to the Redact pipeline. Returns null when the source isn't
+ * available (one-shot uploads aren't persisted on disk; only
+ * filesystem-scoped scheduled scans are).
+ */
+export interface ScanFileFetcher {
+  fetch(args: {
+    jobId: string;
+    filePath: string;
+  }): Promise<{ bytes: Buffer; mime: string; filename: string } | null>;
 }
 
 const ALLOWED_MIMES = new Set([
@@ -190,11 +222,13 @@ export function scanRouter(deps: ScanRoutesDeps): Router {
           typeof req.query['entity_type'] === 'string'
             ? req.query['entity_type']
             : undefined;
+        const includeSuppressed = req.query['include_suppressed'] === 'true';
         const limit = parseIntQuery(req.query['limit'], 200);
         const offset = parseIntQuery(req.query['offset'], 0);
         const findings = await deps.jobs.listFindings(job.id, {
           ...(severity !== undefined ? { severity } : {}),
           ...(entityType !== undefined ? { entityType } : {}),
+          includeSuppressed,
           limit,
           offset,
         });
@@ -309,6 +343,247 @@ export function scanRouter(deps: ScanRoutesDeps): Router {
     })();
   });
 
+  // v1.9 — suppress / unsuppress a single finding.
+  router.put('/v1/scan/findings/:id/suppress', (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasScanRole(req.user, 'operator')) {
+          throw new PermissionError('scan operator role required');
+        }
+        const findingId = req.params.id ?? '';
+        const finding = await deps.jobs.findFindingById(findingId);
+        if (finding === null) throw new NotFoundError('finding');
+        // Owner / admin gate via the parent job.
+        const job = await fetchOwnedJob(deps.jobs, finding.jobId, req.user);
+        const reason = typeof req.body === 'object' && req.body !== null
+          ? sanitizeReason((req.body as { reason?: unknown }).reason)
+          : null;
+        const updated = await deps.jobs.setFindingSuppressed(
+          findingId,
+          true,
+          { userId: req.user.id, reason },
+        );
+        if (updated === null) throw new NotFoundError('finding');
+        if (deps.audit !== undefined) {
+          void deps.audit
+            .append({
+              tenantId: 'appliance',
+              eventType: 'request',
+              module: 'scan',
+              payload: {
+                action: 'finding_suppressed',
+                scan_job_id: job.id,
+                finding_id: findingId,
+                user_id: req.user.id,
+                reason_provided: reason !== null,
+              },
+            })
+            .catch(() => undefined);
+        }
+        res.json(findingToWire(updated));
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.delete('/v1/scan/findings/:id/suppress', (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasScanRole(req.user, 'operator')) {
+          throw new PermissionError('scan operator role required');
+        }
+        const findingId = req.params.id ?? '';
+        const finding = await deps.jobs.findFindingById(findingId);
+        if (finding === null) throw new NotFoundError('finding');
+        const job = await fetchOwnedJob(deps.jobs, finding.jobId, req.user);
+        const updated = await deps.jobs.setFindingSuppressed(
+          findingId,
+          false,
+          { userId: null, reason: null },
+        );
+        if (updated === null) throw new NotFoundError('finding');
+        if (deps.audit !== undefined) {
+          void deps.audit
+            .append({
+              tenantId: 'appliance',
+              eventType: 'request',
+              module: 'scan',
+              payload: {
+                action: 'finding_unsuppressed',
+                scan_job_id: job.id,
+                finding_id: findingId,
+                user_id: req.user.id,
+              },
+            })
+            .catch(() => undefined);
+        }
+        res.json(findingToWire(updated));
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  // v1.9 — bulk-redact: one Redact job per flagged file.
+  router.post('/v1/scan/jobs/:id/redact', (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasScanRole(req.user, 'operator')) {
+          throw new PermissionError('scan operator role required');
+        }
+        const id = req.params.id ?? '';
+        const job = await fetchOwnedJob(deps.jobs, id, req.user);
+        if (
+          deps.redactJobs === undefined ||
+          deps.redactPipeline === undefined ||
+          deps.redactStorage === undefined ||
+          deps.scanFileFetcher === undefined
+        ) {
+          throw new NotImplementedError(
+            'bulk-redact requires a scan-file fetcher (filesystem-scoped scheduled scans only)',
+          );
+        }
+        const flaggedFiles = await deps.jobs.listFilesWithFindings(job.id);
+        if (flaggedFiles.length === 0) {
+          res.status(200).json({ created: [], skipped: [] });
+          return;
+        }
+        const created: Array<{ scan_file_id: string; redact_job_id: string; path: string }> = [];
+        const skipped: Array<{ path: string; reason: string }> = [];
+        for (const { fileId, path } of flaggedFiles) {
+          const fetched = await deps.scanFileFetcher.fetch({
+            jobId: job.id,
+            filePath: path,
+          });
+          if (fetched === null) {
+            skipped.push({ path, reason: 'source no longer available' });
+            continue;
+          }
+          const redactJob = await deps.redactJobs.create({
+            userId: req.user.id,
+            filename: fetched.filename,
+            mime: fetched.mime,
+            sourceSizeBytes: fetched.bytes.length,
+          });
+          await deps.jobs.addRedactLink({
+            scanJobId: job.id,
+            scanFileId: fileId,
+            redactJobId: redactJob.id,
+          });
+          const ext = extFromPath(fetched.filename);
+          // Fire-and-forget — same async pattern as POST /v1/redact/jobs.
+          void deps.redactPipeline
+            .run(redactJob, fetched.bytes, ext, req.header('x-correlation-id') ?? undefined)
+            .catch(() => undefined);
+          created.push({ scan_file_id: fileId, redact_job_id: redactJob.id, path });
+        }
+        if (deps.audit !== undefined) {
+          void deps.audit
+            .append({
+              tenantId: 'appliance',
+              eventType: 'request',
+              module: 'scan',
+              payload: {
+                action: 'bulk_redact',
+                scan_job_id: job.id,
+                user_id: req.user.id,
+                created_count: created.length,
+                skipped_count: skipped.length,
+              },
+            })
+            .catch(() => undefined);
+        }
+        res.status(202).json({ created, skipped });
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.get('/v1/scan/jobs/:id/redact-links', (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasScanRole(req.user, 'viewer')) {
+          throw new PermissionError('scan viewer role required');
+        }
+        const id = req.params.id ?? '';
+        const job = await fetchOwnedJob(deps.jobs, id, req.user);
+        const links = await deps.jobs.listRedactLinks(job.id);
+        res.json(
+          links.map((l) => ({
+            id: l.id,
+            scan_file_id: l.scanFileId,
+            redact_job_id: l.redactJobId,
+            created_at: l.createdAt.toISOString(),
+          })),
+        );
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  // v1.9 — compare two scan runs. Returns added / removed /
+  // persistent findings keyed by sample_hash.
+  router.get('/v1/scan/compare', (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasScanRole(req.user, 'viewer')) {
+          throw new PermissionError('scan viewer role required');
+        }
+        const aId = typeof req.query['a'] === 'string' ? req.query['a'] : '';
+        const bId = typeof req.query['b'] === 'string' ? req.query['b'] : '';
+        if (aId === '' || bId === '') {
+          throw new InvalidRequestError('a and b query params are required');
+        }
+        const a = await fetchOwnedJob(deps.jobs, aId, req.user);
+        const b = await fetchOwnedJob(deps.jobs, bId, req.user);
+        const [aHashes, bHashes] = await Promise.all([
+          deps.jobs.listFindingHashes(a.id),
+          deps.jobs.listFindingHashes(b.id),
+        ]);
+        const aMap = new Map(aHashes.map((h) => [h.sampleHash, h]));
+        const bMap = new Map(bHashes.map((h) => [h.sampleHash, h]));
+        const added: typeof bHashes = [];
+        const removed: typeof aHashes = [];
+        const persistent: typeof aHashes = [];
+        for (const h of bHashes) {
+          if (aMap.has(h.sampleHash)) {
+            persistent.push(h);
+          } else {
+            added.push(h);
+          }
+        }
+        for (const h of aHashes) {
+          if (!bMap.has(h.sampleHash)) removed.push(h);
+        }
+        res.json({
+          a: {
+            id: a.id,
+            source_name: a.sourceName,
+            created_at: a.createdAt.toISOString(),
+          },
+          b: {
+            id: b.id,
+            source_name: b.sourceName,
+            created_at: b.createdAt.toISOString(),
+          },
+          added: added.map(hashToWire),
+          removed: removed.map(hashToWire),
+          persistent: persistent.map(hashToWire),
+        });
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
   router.delete('/v1/scan/jobs/:id', (req, res, next) => {
     void (async () => {
       try {
@@ -364,8 +639,37 @@ function findingToWire(
     snippet_redacted: f.snippetRedacted,
     sample_hash: f.sampleHash,
     suppressed: f.suppressed,
+    suppressed_by: f.suppressedBy,
+    suppressed_at: f.suppressedAt?.toISOString() ?? null,
+    suppressed_reason: f.suppressedReason,
     created_at: f.createdAt.toISOString(),
   };
+}
+
+function hashToWire(h: {
+  sampleHash: string;
+  entityType: string;
+  severity: 'low' | 'medium' | 'high';
+  path: string;
+}) {
+  return {
+    sample_hash: h.sampleHash,
+    entity_type: h.entityType,
+    severity: h.severity,
+    path: h.path,
+  };
+}
+
+function sanitizeReason(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim().slice(0, 500);
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+function extFromPath(name: string): string {
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(name);
+  if (m === null) return 'bin';
+  return m[1]!.toLowerCase();
 }
 
 function parseSeverity(raw: unknown): ScanSeverity | undefined {

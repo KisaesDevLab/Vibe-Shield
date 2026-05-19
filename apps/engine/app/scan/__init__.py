@@ -23,6 +23,8 @@ Each scanner enforces:
 
 from .archive_scanner import ArchiveScanner
 from .base import Finding, ScanContext, Scanner, ScannerRegistry, ScanRunner
+from .email_scanner import EmlScanner, MboxScanner
+from .image_pdf_scanner import ImagePdfScanner
 from .office_scanner import OfficeDocScanner
 from .pdf_text_scanner import PdfTextScanner
 from .text_scanner import CsvScanner, PlainTextScanner
@@ -30,7 +32,10 @@ from .text_scanner import CsvScanner, PlainTextScanner
 __all__ = [
     "ArchiveScanner",
     "CsvScanner",
+    "EmlScanner",
     "Finding",
+    "ImagePdfScanner",
+    "MboxScanner",
     "OfficeDocScanner",
     "PdfTextScanner",
     "PlainTextScanner",
