@@ -267,14 +267,15 @@ Integration plan documented at `compliance/integrations/mybooks.md` (commit 3175
 
 Plan at `compliance/integrations/tb.md`. Tax-code crosswalk + JE narrative routing through gateway. Open.
 
-### Phase 17 — Image + PDF redaction pipeline **[shipped, v1.6]**
+### Phase 17 — Image + PDF redaction pipeline **[shipped, v1.7]**
 
 End-to-end user-facing UI:
 - **v1.4** — drag-and-drop image upload, status tracking, per-artifact downloads, history view.
 - **v1.5** — PDF support (poppler-utils + pdf2image in engine), async upload path (202 Accepted) for PDFs, SSE progress stream with per-page events, multi-page PDF assembly via pdf-lib, artifact-purge cron.
 - **v1.6** — engine `/redact-pdf` streams NDJSON (per-page yield); gateway consumer fires `onPage` per page so SSE arrives in real time (not batched at end). Bulk-redact: `POST /v1/redact/batches` accepts up to 50 files, creates a batch + one job per file (`batch_id` FK), drains sequentially. New `vs_redact_batches` table + `RedactBatchStore`. SPA dropzone accepts multiple files / folders.
+- **v1.7** — per-job `.zip` bundle (source + redacted PDF + extracted MD/JSON + audit + per-page PNGs + README) streamed via `archiver`. Per-batch `.zip` bundle (one redacted PDF per completed child + `summary.csv` + README). `POST /v1/redact/jobs/:id/retry` re-runs the pipeline from the persisted source upload. SPA gains a BatchDetail card with aggregate progress polling.
 
-`vs_redact_jobs` table + `RedactJobStore` + crash recovery via `reapStaleRunning()`. RBAC via `requires('redact', <role>)`. Open: image QA corpus + recall gates (v1.7), P95 latency budget on NucBox M6, batch concurrency (currently sequential drain).
+`vs_redact_jobs` table + `RedactJobStore` + crash recovery via `reapStaleRunning()`. RBAC via `requires('redact', <role>)`. Open: image QA corpus + recall gates, P95 latency budget on NucBox M6, batch concurrency (currently sequential drain).
 
 ### Phase 18 — Vibe Tax Research Chat & GLM-OCR integration
 

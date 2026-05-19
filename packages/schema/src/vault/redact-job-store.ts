@@ -142,6 +142,30 @@ export class RedactJobStore {
       .where(eq(redactJobs.id, id));
   }
 
+  /**
+   * v1.7 — reset a failed job back to pending so the pipeline can run
+   * again. Clears error_message + finished_at; started_at is rewritten
+   * the moment the pipeline calls markRunning(). The pages_count is
+   * cleared so the SPA's progress bar starts fresh.
+   */
+  async resetForRetry(id: string): Promise<RedactJobRecord> {
+    const [row] = await this.db
+      .update(redactJobs)
+      .set({
+        status: 'pending',
+        errorMessage: null,
+        startedAt: null,
+        finishedAt: null,
+        pagesCount: null,
+      })
+      .where(eq(redactJobs.id, id))
+      .returning();
+    if (row === undefined) {
+      throw new RedactJobNotFoundError(`redact job ${id} not found`);
+    }
+    return toRecord(row);
+  }
+
   /** Find completed jobs past their expiry — for the artifact-purge cron. */
   async findExpired(now: Date = new Date()): Promise<RedactJobRecord[]> {
     const rows = await this.db

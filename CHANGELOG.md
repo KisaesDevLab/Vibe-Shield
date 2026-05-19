@@ -4,6 +4,40 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-05-19
+
+### Added — Phase 17 v1.7: Redact polish (bundle + retry + batch progress)
+
+Quality-of-life pass on the Redact module. No new external dependencies, no engine work — just stuff the v1.4–v1.6 surface was missing for production use.
+
+- **Per-job zip bundle** — `GET /v1/redact/jobs/:id/bundle` streams a single `.zip` containing the source upload, redacted PDF, extracted MD + JSON, audit JSONL, per-page PNGs, and a README with fingerprints + expiry. Built with `archiver` (streaming; no full-job-in-memory). Filename: `<stem>-bundle.zip`.
+- **Per-batch zip bundle** — `GET /v1/redact/batches/:id/bundle` streams one redacted PDF per completed child job, plus `summary.csv` (id, filename, status, pages, expires_at) and a README. Failed / in-progress jobs land in the CSV but not as PDFs. Filename collisions are de-duplicated with `-2`, `-3` suffixes.
+- **Retry failed jobs** — `POST /v1/redact/jobs/:id/retry` re-runs the pipeline from the persisted source upload. Refuses non-`failed` status with 400. `RedactJobStore.resetForRetry()` returns the row to `pending` with `error_message` + `finished_at` + `pages_count` cleared. Same sync/async behavior as the initial upload (images sync, PDFs 202 + background).
+- **Batch progress UI** — when a batch upload finishes, the SPA shows a dedicated BatchDetail card with an aggregate progress bar (jobs_done / jobs_total), per-status counters (completed / failed / running / pending), a collapsible per-file status table, and a "Download all completed (.zip)" button that lights up once every job is terminal. Polls every 2s; settles when nothing is pending+running.
+- **Job-detail buttons** — the completed-job download row now leads with a "Bundle (.zip)" button. Failed jobs surface a "Retry redaction" button (operator+ role required). Existing individual artifact links are preserved.
+- **Admin client** — `redactJobBundleUrl(id)`, `redactBatchBundleUrl(id)`, `retryRedactJob(id)`, `getRedactBatch(id)`, `listRedactBatches(limit)` added to `AdminClient`.
+- **Storage** — `JobStorage.listPages(jobId)` enumerates the `pages/` directory for bundle assembly; returns `[]` cleanly on missing-dir.
+
+### Changed
+
+- `pdf-lib` producer string bumped to `Vibe Shield v1.7`.
+- `RedactView` accepts batch selection state (`selectedBatchId`) alongside the existing job selection — both can be visible simultaneously after a bulk upload.
+
+### Verification
+
+**404 tests pass** locally against Postgres 16 + Redis 7 (5 client + 8 admin + 213 schema + 178 gateway including 18 redact integration tests; 4 new for v1.7):
+
+- Per-job bundle: zip magic bytes verified; README.txt + redacted.pdf + extracted.md + extracted.json + audit.jsonl + pages/1.png + source.png all present in the central directory.
+- Retry happy path: flaky engine that fails the first call + succeeds the second → upload returns `failed`, retry returns `completed` with `error_message: null`.
+- Retry rejection: retry against a `completed` job returns 400 with "only failed jobs are retryable".
+- Batch bundle: 2-file batch → drain → bundle contains README.txt + summary.csv + b1-redacted.pdf + b2-redacted.pdf.
+
+### Operator notes
+
+- The bundle endpoint streams: an 80-page job is roughly `80 * page_size` bytes through the response — no full archive sits in memory. Bundles are not cached on disk; rebuilt per request.
+- Retry replays the pipeline against the original source upload; if the source has been purged (expired job or manual delete), retry returns 400 with a clear message.
+- No new env vars. No schema migration. No GHCR image-size growth.
+
 ## [1.6.0] — 2026-05-18
 
 ### Added — Phase 17 v1.6: per-page engine streaming + bulk-redact

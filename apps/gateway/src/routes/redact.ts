@@ -41,6 +41,12 @@ import {
   JobStorage,
   type ArtifactKind,
 } from '../redact/storage.js';
+import {
+  batchBundleFilename,
+  jobBundleFilename,
+  streamBatchBundle,
+  streamJobBundle,
+} from '../redact/bundle.js';
 import type { RedactJobEvents } from '../redact/job-events.js';
 
 export interface RedactRoutesDeps {
@@ -326,6 +332,93 @@ export function redactRouter(deps: RedactRoutesDeps): Router {
     })();
   });
 
+  // v1.7 — per-job zip bundle. README + source + redacted PDF +
+  // extracted MD/JSON + audit + per-page PNGs in one download.
+  router.get('/v1/redact/jobs/:id/bundle', (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasRedactRole(req.user, 'viewer')) {
+          throw new PermissionError('redact viewer role required');
+        }
+        const id = req.params.id ?? '';
+        const job = await fetchOwnedJob(deps.jobs, id, req.user);
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${jobBundleFilename(job)}"`,
+        );
+        await streamJobBundle(deps.storage, job, res);
+      } catch (err) {
+        if (err instanceof InvalidJobIdError) {
+          next(new InvalidRequestError('invalid job id'));
+          return;
+        }
+        next(err);
+      }
+    })();
+  });
+
+  // v1.7 — retry a failed job. Re-runs the pipeline from the
+  // persisted source upload; the row transitions failed → pending →
+  // running → completed/failed.
+  router.post('/v1/redact/jobs/:id/retry', (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasRedactRole(req.user, 'operator')) {
+          throw new PermissionError('redact operator role required');
+        }
+        const id = req.params.id ?? '';
+        const job = await fetchOwnedJob(deps.jobs, id, req.user);
+        if (job.status !== 'failed') {
+          throw new InvalidRequestError(
+            `cannot retry job in status '${job.status}' — only failed jobs are retryable`,
+          );
+        }
+        const sourceExt = JobStorage.safeExt(job.filename);
+        let sourceBytes: Buffer;
+        try {
+          sourceBytes = await deps.storage.readArtifact(job.id, 'source', sourceExt);
+        } catch (err) {
+          if (err instanceof ArtifactNotFoundError) {
+            throw new InvalidRequestError(
+              'source upload no longer on disk — cannot retry (job may have been partially purged)',
+            );
+          }
+          throw err;
+        }
+        const reset = await deps.jobs.resetForRetry(job.id);
+        const isAsync = reset.mime === 'application/pdf';
+        if (isAsync) {
+          void deps.pipeline
+            .run(
+              reset,
+              sourceBytes,
+              sourceExt,
+              req.header('x-correlation-id') ?? undefined,
+            )
+            .catch(() => undefined);
+          res.status(202).json(jobToWire(reset));
+          return;
+        }
+        const finished = await deps.pipeline.run(
+          reset,
+          sourceBytes,
+          sourceExt,
+          req.header('x-correlation-id') ?? undefined,
+        );
+        res.status(200).json(jobToWire(finished));
+      } catch (err) {
+        if (err instanceof InvalidJobIdError) {
+          next(new InvalidRequestError('invalid job id'));
+          return;
+        }
+        next(err);
+      }
+    })();
+  });
+
   // v1.6 — bulk-redact. POST /v1/redact/batches accepts up to 50
   // files in one multipart upload; we create one batch row + one
   // job per file (all share batch_id) and process them
@@ -468,6 +561,36 @@ export function redactRouter(deps: RedactRoutesDeps): Router {
           summary,
           jobs: childJobs.map(jobToWire),
         });
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.get('/v1/redact/batches/:id/bundle', (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasRedactRole(req.user, 'viewer')) {
+          throw new PermissionError('redact viewer role required');
+        }
+        if (deps.batches === undefined) throw new NotFoundError('batch');
+        const id = req.params.id ?? '';
+        const batch = await deps.batches.findById(id);
+        if (batch === null) throw new NotFoundError('batch');
+        if (
+          !isOrgAdminOrRedactAdmin(req.user) &&
+          batch.userId !== req.user.id
+        ) {
+          throw new NotFoundError('batch');
+        }
+        const childJobs = await deps.jobs.listForBatch(batch.id);
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${batchBundleFilename(batch.id)}"`,
+        );
+        await streamBatchBundle(deps.storage, batch.id, childJobs, res);
       } catch (err) {
         next(err);
       }
