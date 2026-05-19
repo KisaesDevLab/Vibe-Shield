@@ -172,6 +172,14 @@ const configSchema = z.object({
     .int()
     .nonnegative()
     .default(60 * 60 * 1000),
+  /** Phase 26 v1.8 — Scan module per-upload byte cap. Default 100 MB
+   *  matches the engine's per-inner-file cap. Archives can carry up
+   *  to 1 GB uncompressed (enforced inside the engine). */
+  SCAN_MAX_UPLOAD_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(100 * 1024 * 1024),
 });
 
 export type GatewayConfig = z.infer<typeof configSchema>;

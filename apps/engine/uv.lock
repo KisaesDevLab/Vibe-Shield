@@ -276,6 +276,15 @@ wheels = [
 requires-dist = [{ name = "spacy", specifier = ">=3.7.2,<3.8.0" }]
 
 [[package]]
+name = "et-xmlfile"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d3/38/af70d7ab1ae9d4da450eeec1fa3918940a5fafb9055e934af8d6eb0c2313/et_xmlfile-2.0.0.tar.gz", hash = "sha256:dab3f4764309081ce75662649be815c4c9081e88f0837825f90fd28317d4da54", size = 17234, upload-time = "2024-10-25T17:25:40.039Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl", hash = "sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa", size = 18059, upload-time = "2024-10-25T17:25:39.051Z" },
+]
+
+[[package]]
 name = "faker"
 version = "40.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -588,6 +597,18 @@ wheels = [
 ]
 
 [[package]]
+name = "openpyxl"
+version = "3.1.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "et-xmlfile" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3d/f9/88d94a75de065ea32619465d2f77b29a0469500e99012523b91cc4141cd1/openpyxl-3.1.5.tar.gz", hash = "sha256:cf0e3cf56142039133628b5acffe8ef0c12bc902d2aadd3e0fe5878dc08d1050", size = 186464, upload-time = "2024-06-28T14:03:44.161Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c0/da/977ded879c29cbd04de313843e76868e6e13408a94ed6b987245dc7c8506/openpyxl-3.1.5-py2.py3-none-any.whl", hash = "sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2", size = 250910, upload-time = "2024-06-28T14:03:41.161Z" },
+]
+
+[[package]]
 name = "packaging"
 version = "26.2"
 source = { registry = "https://pypi.org/simple" }
@@ -780,6 +801,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pypdf"
+version = "5.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/9a/72d74f05f64895ebf1c7f6646cf7fe6dd124398c5c49240093f92d6f0fdd/pypdf-5.1.0.tar.gz", hash = "sha256:425a129abb1614183fd1aca6982f650b47f8026867c0ce7c4b9f281c443d2740", size = 5011381, upload-time = "2024-10-27T19:46:47.002Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/04/fc/6f52588ac1cb4400a7804ef88d0d4e00cfe57a7ac6793ec3b00de5a8758b/pypdf-5.1.0-py3-none-any.whl", hash = "sha256:3bd4f503f4ebc58bae40d81e81a9176c400cbbac2ba2d877367595fb524dfdfc", size = 297976, upload-time = "2024-10-27T19:46:44.439Z" },
+]
+
+[[package]]
 name = "pytesseract"
 version = "0.3.13"
 source = { registry = "https://pypi.org/simple" }
@@ -851,6 +881,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e3/c4/358cd13daa1d912ef795010897a483ab2f0b41c9ea1b35235a8b2f7d15a7/python_json_logger-3.2.1.tar.gz", hash = "sha256:8eb0554ea17cb75b05d2848bc14fb02fbdbd9d6972120781b974380bfa162008", size = 16287, upload-time = "2024-12-16T06:48:05.882Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4b/72/2f30cf26664fcfa0bd8ec5ee62ec90c03bd485e4a294d92aabc76c5203a5/python_json_logger-3.2.1-py3-none-any.whl", hash = "sha256:cdc17047eb5374bd311e748b42f99d71223f3b0e186f4206cc5d52aefe85b090", size = 14924, upload-time = "2024-12-16T06:48:03.25Z" },
+]
+
+[[package]]
+name = "python-multipart"
+version = "0.0.20"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f3/87/f44d7c9f274c7ee665a29b885ec97089ec5dc034c7f3fafa03da9e39a09e/python_multipart-0.0.20.tar.gz", hash = "sha256:8dd0cab45b8e23064ae09147625994d090fa46f5b0d1e13af944c331a7fa9d13", size = 37158, upload-time = "2024-12-16T19:45:46.972Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/45/58/38b5afbc1a800eeea951b9285d3912613f2603bdf897a4ab0f4bd7f405fc/python_multipart-0.0.20-py3-none-any.whl", hash = "sha256:8a62d3a8335e06589fe01f2a3e178cdcc632f3fbe0d492ad9ee0ec35aab1f104", size = 24546, upload-time = "2024-12-16T19:45:44.423Z" },
 ]
 
 [[package]]
@@ -1315,6 +1354,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
+    { name = "openpyxl" },
     { name = "pdf2image" },
     { name = "pillow" },
     { name = "presidio-analyzer" },
@@ -1322,8 +1362,10 @@ dependencies = [
     { name = "prometheus-client" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "pypdf" },
     { name = "pytesseract" },
     { name = "python-json-logger" },
+    { name = "python-multipart" },
     { name = "pyzbar" },
     { name = "spacy" },
     { name = "transformers" },
@@ -1348,6 +1390,7 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.115.6" },
     { name = "numpy", specifier = "<2.0" },
     { name = "opencv-python-headless", specifier = "==4.10.0.84" },
+    { name = "openpyxl", specifier = "==3.1.5" },
     { name = "pdf2image", specifier = "==1.17.0" },
     { name = "pillow", specifier = "==11.0.0" },
     { name = "presidio-analyzer", specifier = "==2.2.358" },
@@ -1355,8 +1398,10 @@ requires-dist = [
     { name = "prometheus-client", specifier = "==0.21.1" },
     { name = "pydantic", specifier = "==2.10.4" },
     { name = "pydantic-settings", specifier = "==2.7.0" },
+    { name = "pypdf", specifier = "==5.1.0" },
     { name = "pytesseract", specifier = "==0.3.13" },
     { name = "python-json-logger", specifier = "==3.2.1" },
+    { name = "python-multipart", specifier = "==0.0.20" },
     { name = "pyzbar", specifier = "==0.1.9" },
     { name = "spacy", specifier = "==3.7.5" },
     { name = "transformers", specifier = "==4.46.3" },

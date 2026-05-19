@@ -256,6 +256,75 @@ export class AdminClient {
     return this.request(`/v1/redact/jobs/${id}`, { method: 'DELETE' });
   }
 
+  // ----- Scan module (Phase 26 v1.8 foundation) ------------------
+
+  async uploadScan(file: File): Promise<ScanJobRow> {
+    const fd = new FormData();
+    fd.append('file', file);
+    const headers: Record<string, string> = {};
+    if (this.adminKey !== undefined) {
+      headers['X-Admin-Key'] = this.adminKey;
+    }
+    const res = await fetch(`${BASE}/v1/scan/jobs`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers,
+      body: fd,
+    });
+    if (!res.ok) {
+      let message = `upload returned ${String(res.status)}`;
+      try {
+        const body = (await res.json()) as { error?: { message?: string } };
+        if (body.error?.message !== undefined) message = body.error.message;
+      } catch {
+        // ignore
+      }
+      throw new AdminApiError(message, res.status, '/v1/scan/jobs');
+    }
+    return (await res.json()) as ScanJobRow;
+  }
+
+  listScanJobs(limit = 50): Promise<ScanJobRow[]> {
+    return this.request(`/v1/scan/jobs?limit=${String(limit)}`);
+  }
+
+  getScanJob(id: string): Promise<ScanJobRow> {
+    return this.request(`/v1/scan/jobs/${id}`);
+  }
+
+  listScanFiles(jobId: string): Promise<ScanFileRow[]> {
+    return this.request(`/v1/scan/jobs/${jobId}/files`);
+  }
+
+  listScanFindings(
+    jobId: string,
+    params: {
+      severity?: 'low' | 'medium' | 'high';
+      entity_type?: string;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ): Promise<ScanFindingRow[]> {
+    const qs = new URLSearchParams();
+    if (params.severity !== undefined) qs.set('severity', params.severity);
+    if (params.entity_type !== undefined)
+      qs.set('entity_type', params.entity_type);
+    if (params.limit !== undefined) qs.set('limit', String(params.limit));
+    if (params.offset !== undefined) qs.set('offset', String(params.offset));
+    const tail = qs.toString();
+    return this.request(
+      `/v1/scan/jobs/${jobId}/findings${tail ? `?${tail}` : ''}`,
+    );
+  }
+
+  scanFindingsCsvUrl(jobId: string): string {
+    return `${BASE}/v1/scan/jobs/${jobId}/findings.csv`;
+  }
+
+  deleteScanJob(id: string): Promise<void> {
+    return this.request(`/v1/scan/jobs/${id}`, { method: 'DELETE' });
+  }
+
   // ----- API Keys -------------------------------------------------
 
   listApiKeys(): Promise<ApiKeyRow[]> {
@@ -451,5 +520,49 @@ export interface RedactBatchRow {
   user_id: string;
   name: string | null;
   total_jobs: number;
+  created_at: string;
+}
+
+/** Phase 26 v1.8 — Scan module job row. */
+export interface ScanJobRow {
+  id: string;
+  user_id: string;
+  source_kind: 'file' | 'archive';
+  source_name: string;
+  source_mime: string;
+  source_size_bytes: number;
+  files_count: number;
+  findings_count: number;
+  findings_high: number;
+  findings_medium: number;
+  findings_low: number;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  expires_at: string;
+}
+
+export interface ScanFileRow {
+  id: string;
+  path: string;
+  mime: string;
+  size_bytes: number;
+  sha256: string;
+  skipped_reason: string | null;
+  created_at: string;
+}
+
+export interface ScanFindingRow {
+  id: string;
+  job_id: string;
+  file_id: string;
+  entity_type: string;
+  severity: 'low' | 'medium' | 'high';
+  location: string;
+  snippet_redacted: string;
+  sample_hash: string;
+  suppressed: boolean;
   created_at: string;
 }

@@ -9,7 +9,7 @@
   "image": {
     "server":     "ghcr.io/kisaesdevlab/vibe-shield-gateway",
     "client":     "ghcr.io/kisaesdevlab/vibe-shield-admin",
-    "defaultTag": "v1.7.0",
+    "defaultTag": "v1.8.0",
     "extras": [
       { "name": "engine", "image": "ghcr.io/kisaesdevlab/vibe-shield-engine" }
     ]
@@ -118,6 +118,20 @@
         "name":  "LOG_LEVEL",
         "value": "info",
         "doc":   "Pino log level. fatal | error | warn | info | debug | trace | silent."
+      },
+      {
+        "name":  "SCAN_MAX_UPLOAD_BYTES",
+        "value": "104857600",
+        "doc":   "Phase 26 v1.8 — Scan module per-upload byte cap. Defaults to 100 MB. Archives can carry up to 1 GB uncompressed.",
+        "ui": {
+          "tier":      2,
+          "category":  "Application",
+          "label":     "Max scan upload size (bytes)",
+          "helpText":  "100 MB default. Archive inner-file cap is enforced inside the engine.",
+          "input":     "number",
+          "appliance": "per-app",
+          "validate":  "number-range:1048576:5368709120"
+        }
       }
     ]
   },

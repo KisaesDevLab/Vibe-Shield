@@ -3,8 +3,9 @@ from __future__ import annotations
 import base64
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Annotated
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app import __version__
@@ -360,6 +361,150 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
             stream(),
             media_type="application/x-ndjson",
         )
+
+    # ------------------------------------------------------------------
+    # Phase 26 / v1.8 — Module 2 (Scan).
+    #
+    # POST /scan accepts a single multipart file (a document or a zip
+    # archive) and streams findings back as NDJSON. The gateway
+    # pipeline consumes the stream line-by-line, persists scan_files +
+    # scan_findings rows, and emits SSE progress events to the SPA.
+    #
+    # Lines:
+    #   {"type":"file_scanned", path, mime, size_bytes, sha256}
+    #   {"type":"file_skipped", path, mime, size_bytes, sha256, reason}
+    #   {"type":"finding",      path, entity_type, severity, location,
+    #                           snippet_redacted, sample_hash}
+    #   {"type":"summary",      files_count, findings_count,
+    #                           findings_high, findings_medium, findings_low}
+    #   {"type":"error",        message}      # mid-stream failure
+    #
+    # Hard rule: cleartext PII never lands in any of these lines. The
+    # snippet redacts the matched span; the cleartext is hashed.
+    # ------------------------------------------------------------------
+    @app.post("/scan")
+    def scan_file(
+        file: Annotated[UploadFile, File()],
+        source_kind: Annotated[str, Form()] = "file",
+        a: AnalyzerService = Depends(get_analyzer),
+    ) -> StreamingResponse:
+        import json
+
+        from app.scan import (
+            ArchiveScanner,
+            CsvScanner,
+            OfficeDocScanner,
+            PdfTextScanner,
+            PlainTextScanner,
+            ScanContext,
+            ScannerRegistry,
+            ScanRunner,
+        )
+        from app.scan.base import FileScanned, FileSkipped, Finding
+
+        body_bytes = file.file.read()
+        size_bytes = len(body_bytes)
+        mime = file.content_type or "application/octet-stream"
+        filename = file.filename or "upload.bin"
+
+        plain = PlainTextScanner()
+        csv_s = CsvScanner()
+        office = OfficeDocScanner()
+        pdf_s = PdfTextScanner()
+        # Build the inner-file registry first so the archive scanner
+        # can dispatch to it; then add the archive scanner that closes
+        # over that same registry.
+        inner_registry = ScannerRegistry([csv_s, office, pdf_s, plain])
+        archive = ArchiveScanner(inner_registry)
+        full_registry = ScannerRegistry([archive, csv_s, office, pdf_s, plain])
+
+        runner = ScanRunner(analyzer=a, registry=full_registry, ctx=ScanContext())
+
+        from collections.abc import Iterator as _Iter
+        from io import BytesIO
+
+        def stream() -> _Iter[str]:
+            files_count = 0
+            findings_count = 0
+            findings_by_sev = {"low": 0, "medium": 0, "high": 0}
+            try:
+                for event in runner.run(filename, BytesIO(body_bytes), size_bytes, mime):
+                    if isinstance(event, FileScanned):
+                        files_count += 1
+                        yield (
+                            json.dumps(
+                                {
+                                    "type": "file_scanned",
+                                    "path": event.path,
+                                    "mime": event.mime,
+                                    "size_bytes": event.size_bytes,
+                                    "sha256": event.sha256,
+                                }
+                            )
+                            + "\n"
+                        )
+                    elif isinstance(event, FileSkipped):
+                        files_count += 1
+                        yield (
+                            json.dumps(
+                                {
+                                    "type": "file_skipped",
+                                    "path": event.path,
+                                    "mime": event.mime,
+                                    "size_bytes": event.size_bytes,
+                                    "sha256": event.sha256,
+                                    "reason": event.reason,
+                                }
+                            )
+                            + "\n"
+                        )
+                    elif isinstance(event, Finding):
+                        findings_count += 1
+                        if event.severity in findings_by_sev:
+                            findings_by_sev[event.severity] += 1
+                        else:  # belt-and-braces
+                            findings_by_sev["medium"] += 1
+                        ENTITIES_DETECTED.labels(entity_type=event.entity_type).inc()
+                        yield (
+                            json.dumps(
+                                {
+                                    "type": "finding",
+                                    "path": event.path,
+                                    "entity_type": event.entity_type,
+                                    "severity": event.severity,
+                                    "location": event.location,
+                                    "snippet_redacted": event.snippet_redacted,
+                                    "sample_hash": event.sample_hash,
+                                }
+                            )
+                            + "\n"
+                        )
+                yield (
+                    json.dumps(
+                        {
+                            "type": "summary",
+                            "source_kind": source_kind,
+                            "files_count": files_count,
+                            "findings_count": findings_count,
+                            "findings_high": findings_by_sev["high"],
+                            "findings_medium": findings_by_sev["medium"],
+                            "findings_low": findings_by_sev["low"],
+                        }
+                    )
+                    + "\n"
+                )
+            except Exception as exc:
+                yield (
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "message": f"{type(exc).__name__}: {exc!s}",
+                        }
+                    )
+                    + "\n"
+                )
+
+        return StreamingResponse(stream(), media_type="application/x-ndjson")
 
     return app
 

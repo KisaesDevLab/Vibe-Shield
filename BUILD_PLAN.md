@@ -358,7 +358,11 @@ Tests: 9 on the registry (load + SHA stability + malformed handling), 7 on the r
 
 ---
 
-### Phase 26 — [addendum R–V] Module 2: Shield · Scan
+### Phase 26 — [addendum R–V] Module 2: Shield · Scan **[v1.8 foundation shipped]**
+
+**v1.8 status** — engine `Scanner` ABC + plain text / CSV / xlsx / PDF (text-layer) / zip archive scanners; engine `POST /scan` (NDJSON stream); schema `vs_scan_jobs` + `vs_scan_files` + `vs_scan_findings`; gateway `/v1/scan/*` route group with RBAC + CSV export + SSE progress; admin SPA top-nav entry with severity-filtered findings table. **Deferred to v1.9:** ImagePdfScanner, eml/mbox/pst scanners, bulk-redact integration, suppression, scheduled scans, compare-runs view.
+
+
 
 Point Shield at a directory, archive, spreadsheet, mbox, etc. and get back a report of every file containing unredacted PII; optionally bulk-redact in place.
 

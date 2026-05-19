@@ -21,6 +21,7 @@ import {
   RecognizerMissStore,
   RedactBatchStore,
   RedactJobStore,
+  ScanJobStore,
   SessionManager,
   TokenVault,
   UserSessionStore,
@@ -45,6 +46,8 @@ import { RedactJobEvents } from './redact/job-events.js';
 import { RedactPipeline } from './redact/pipeline.js';
 import { RedactPurgeCron } from './redact/purge-cron.js';
 import { JobStorage } from './redact/storage.js';
+import { ScanJobEvents } from './scan/job-events.js';
+import { ScanPipeline } from './scan/pipeline.js';
 import { PerTenantKeyResolver } from './tenant-key/resolver.js';
 
 async function main(): Promise<void> {
@@ -204,6 +207,17 @@ async function main(): Promise<void> {
   });
   redactPurgeCron.start();
 
+  // Phase 26 v1.8 — Scan module wiring.
+  const scanJobStore = new ScanJobStore(dbHandle.db);
+  const scanEvents = new ScanJobEvents();
+  const scanPipeline = new ScanPipeline({
+    jobs: scanJobStore,
+    engine,
+    audit,
+    events: scanEvents,
+    logger,
+  });
+
   // Phase 24 — identity v2 wiring. Constructed unconditionally; the
   // auth routes themselves degrade gracefully when SMTP isn't set.
   const userStore = new UserStore(dbHandle.db);
@@ -314,6 +328,10 @@ async function main(): Promise<void> {
     redactEvents,
     redactBatches: redactBatchStore,
     redactMaxUploadBytes: config.REDACT_MAX_UPLOAD_BYTES,
+    scanJobs: scanJobStore,
+    scanPipeline,
+    scanEvents,
+    scanMaxUploadBytes: config.SCAN_MAX_UPLOAD_BYTES,
     ...(mailer !== undefined ? { mailer } : {}),
     ...(config.PUBLIC_URL !== undefined ? { publicUrl: config.PUBLIC_URL } : {}),
     logger,

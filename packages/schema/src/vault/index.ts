@@ -101,3 +101,18 @@ export type {
   CreateRedactBatchInput,
   RedactBatchRecord,
 } from './redact-batch-store.js';
+
+export {
+  ScanJobNotFoundError,
+  ScanJobStore,
+} from './scan-job-store.js';
+export type {
+  AddScanFileInput,
+  AddScanFindingInput,
+  CreateScanJobInput,
+  ScanFileRecord,
+  ScanFindingRecord,
+  ScanJobRecord,
+  ScanJobStatus,
+  ScanSeverity,
+} from './scan-job-store.js';

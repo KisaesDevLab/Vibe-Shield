@@ -15,6 +15,7 @@ import type {
   RecognizerMissStore,
   RedactBatchStore,
   RedactJobStore,
+  ScanJobStore,
   SessionManager,
   TokenVault,
   UserSessionStore,
@@ -42,8 +43,11 @@ import type { SpendRateLimiter } from './quota/spend-rate-limiter.js';
 import type { RedactJobEvents } from './redact/job-events.js';
 import type { RedactPipeline } from './redact/pipeline.js';
 import type { JobStorage } from './redact/storage.js';
+import type { ScanJobEvents } from './scan/job-events.js';
+import type { ScanPipeline } from './scan/pipeline.js';
 import { adminRouter } from './routes/admin.js';
 import { redactRouter } from './routes/redact.js';
+import { scanRouter } from './routes/scan.js';
 import { healthRouter } from './routes/health.js';
 import { materializeRouter } from './routes/materialize.js';
 import { messagesRouter } from './routes/messages.js';
@@ -112,6 +116,13 @@ export interface AppDeps {
   redactBatches?: RedactBatchStore;
   /** Per-upload byte cap for /v1/redact/jobs. Default 50 MB (v1.5). */
   redactMaxUploadBytes?: number;
+  /** Phase 26 v1.8 — Module 2 (Scan). All three must be set
+   *  together; otherwise /v1/scan/* is disabled. */
+  scanJobs?: ScanJobStore;
+  scanPipeline?: ScanPipeline;
+  scanEvents?: ScanJobEvents;
+  /** Per-upload byte cap for /v1/scan/jobs. Default 100 MB. */
+  scanMaxUploadBytes?: number;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -263,6 +274,19 @@ export function createApp(deps: AppDeps): Express {
           : {}),
         ...(deps.redactBatches !== undefined
           ? { batches: deps.redactBatches }
+          : {}),
+      }),
+    );
+  }
+  if (deps.scanJobs !== undefined && deps.scanPipeline !== undefined) {
+    app.use(
+      scanRouter({
+        jobs: deps.scanJobs,
+        pipeline: deps.scanPipeline,
+        logger: deps.logger,
+        ...(deps.scanEvents !== undefined ? { events: deps.scanEvents } : {}),
+        ...(deps.scanMaxUploadBytes !== undefined
+          ? { maxUploadBytes: deps.scanMaxUploadBytes }
           : {}),
       }),
     );
