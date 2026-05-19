@@ -16,6 +16,7 @@ import type {
   RedactBatchStore,
   RedactJobStore,
   ScanJobStore,
+  ScheduledScanStore,
   SessionManager,
   TokenVault,
   UserSessionStore,
@@ -45,9 +46,11 @@ import type { RedactPipeline } from './redact/pipeline.js';
 import type { JobStorage } from './redact/storage.js';
 import type { ScanJobEvents } from './scan/job-events.js';
 import type { ScanPipeline } from './scan/pipeline.js';
+import type { ScanFileFetcher } from './routes/scan.js';
 import { adminRouter } from './routes/admin.js';
 import { redactRouter } from './routes/redact.js';
 import { scanRouter } from './routes/scan.js';
+import { scheduledScanRouter } from './routes/scheduled-scans.js';
 import { healthRouter } from './routes/health.js';
 import { materializeRouter } from './routes/materialize.js';
 import { messagesRouter } from './routes/messages.js';
@@ -123,6 +126,12 @@ export interface AppDeps {
   scanEvents?: ScanJobEvents;
   /** Per-upload byte cap for /v1/scan/jobs. Default 100 MB. */
   scanMaxUploadBytes?: number;
+  /** v1.9 — bulk-redact integration. When set, POST
+   *  /v1/scan/jobs/:id/redact creates Redact jobs for each flagged
+   *  file via this fetcher. Without it, the endpoint 501s. */
+  scanFileFetcher?: ScanFileFetcher;
+  /** v1.9 — scheduled scans CRUD + runner. */
+  scheduledScans?: ScheduledScanStore;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -288,6 +297,25 @@ export function createApp(deps: AppDeps): Express {
         ...(deps.scanMaxUploadBytes !== undefined
           ? { maxUploadBytes: deps.scanMaxUploadBytes }
           : {}),
+        ...(deps.redactJobs !== undefined ? { redactJobs: deps.redactJobs } : {}),
+        ...(deps.redactPipeline !== undefined
+          ? { redactPipeline: deps.redactPipeline }
+          : {}),
+        ...(deps.redactStorage !== undefined
+          ? { redactStorage: deps.redactStorage }
+          : {}),
+        ...(deps.scanFileFetcher !== undefined
+          ? { scanFileFetcher: deps.scanFileFetcher }
+          : {}),
+        ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
+      }),
+    );
+  }
+  if (deps.scheduledScans !== undefined) {
+    app.use(
+      scheduledScanRouter({
+        store: deps.scheduledScans,
+        logger: deps.logger,
       }),
     );
   }

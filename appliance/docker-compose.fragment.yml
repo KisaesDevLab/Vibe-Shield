@@ -34,7 +34,7 @@ services:
   # Internal-only. No external port. Reachable on the internal Docker
   # network as `vibe-shield-engine:8000`.
   vibe-shield-engine:
-    image: ghcr.io/kisaesdevlab/vibe-shield-engine:${VIBE_SHIELD_VERSION:-v1.8.0}
+    image: ghcr.io/kisaesdevlab/vibe-shield-engine:${VIBE_SHIELD_VERSION:-v1.9.0}
     container_name: vibe-shield-engine
     restart: unless-stopped
     environment:
@@ -65,7 +65,7 @@ services:
   # before starting the server. Set to "false" if you prefer to run
   # migrations as a separate one-shot job for blue-green control.
   vibe-shield-gateway:
-    image: ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.8.0}
+    image: ghcr.io/kisaesdevlab/vibe-shield-gateway:${VIBE_SHIELD_VERSION:-v1.9.0}
     container_name: vibe-shield-gateway
     restart: unless-stopped
     environment:
@@ -108,12 +108,21 @@ services:
       REDACT_PURGE_INTERVAL_MS: ${VIBE_SHIELD_REDACT_PURGE_INTERVAL_MS:-3600000}
       # Phase 26 v1.8 — Scan module per-upload cap.
       SCAN_MAX_UPLOAD_BYTES: ${VIBE_SHIELD_SCAN_MAX_UPLOAD_BYTES:-104857600}
+      # Phase 26 v1.9 — Scan root (filesystem source for scheduled scans
+      # + bulk-redact). Refuses any path that escapes via ../ or absolute.
+      SCAN_ROOT: ${VIBE_SHIELD_SCAN_ROOT:-/var/lib/vibe-shield/scan/root}
+      # Phase 26 v1.9 — scheduled-scan poll interval (ms). 0 disables.
+      SCHEDULED_SCAN_INTERVAL_MS: ${VIBE_SHIELD_SCHEDULED_SCAN_INTERVAL_MS:-60000}
     volumes:
       # Phase 17 v1.4 — persistent storage for per-job artifacts
       # (source upload, redacted PDF, extracted MD/JSON, audit log).
       # Survives container recreate; backed up by the appliance's
       # standard volume-snapshot job.
       - vibe-shield-redact:/var/lib/vibe-shield/redact
+      # Phase 26 v1.9 — scan root the scheduled-scan runner and the
+      # bulk-redact fetcher are allowed to read from. Operators put
+      # the directories they want scanned here.
+      - vibe-shield-scan:/var/lib/vibe-shield/scan
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -139,7 +148,7 @@ services:
   # nginx. Vibe-Appliance operators ignore this — the appliance's per-app
   # env file supplies the right value automatically.
   vibe-shield-admin:
-    image: ghcr.io/kisaesdevlab/vibe-shield-admin:${VIBE_SHIELD_VERSION:-v1.8.0}
+    image: ghcr.io/kisaesdevlab/vibe-shield-admin:${VIBE_SHIELD_VERSION:-v1.9.0}
     container_name: vibe-shield-admin
     restart: unless-stopped
     environment:
@@ -158,3 +167,6 @@ networks:
 volumes:
   # Persistent volume for Phase 17 v1.4 Redact module artifacts.
   vibe-shield-redact: {}
+  # Phase 26 v1.9 — Scan module root. Operators populate with paths
+  # they want scanned on a schedule.
+  vibe-shield-scan: {}

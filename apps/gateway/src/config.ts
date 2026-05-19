@@ -180,6 +180,20 @@ const configSchema = z.object({
     .int()
     .positive()
     .default(100 * 1024 * 1024),
+  /** Phase 26 v1.9 — root the scheduled-scan runner is allowed to
+   *  read from + the bulk-redact fetcher is allowed to fetch from.
+   *  Any source_ref escaping this root via .. or absolute paths is
+   *  refused. Default lives under the appliance volume. */
+  SCAN_ROOT: z.string().default('/var/lib/vibe-shield/scan/root'),
+  /** Phase 26 v1.9 — scheduled-scan poll interval (ms). Default 60s.
+   *  0 disables the runner — useful for blue-green schema rollouts
+   *  where you don't want the new image to start running scheduled
+   *  scans before the cutover. */
+  SCHEDULED_SCAN_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(60_000),
 });
 
 export type GatewayConfig = z.infer<typeof configSchema>;

@@ -22,6 +22,7 @@ import {
   RedactBatchStore,
   RedactJobStore,
   ScanJobStore,
+  ScheduledScanStore,
   SessionManager,
   TokenVault,
   UserSessionStore,
@@ -48,6 +49,9 @@ import { RedactPurgeCron } from './redact/purge-cron.js';
 import { JobStorage } from './redact/storage.js';
 import { ScanJobEvents } from './scan/job-events.js';
 import { ScanPipeline } from './scan/pipeline.js';
+import { ScheduledScanAlerter } from './scan/alerter.js';
+import { ScheduledScanRunner } from './scan/scheduler.js';
+import { FilesystemScanFileFetcher } from './scan/file-fetcher.js';
 import { PerTenantKeyResolver } from './tenant-key/resolver.js';
 
 async function main(): Promise<void> {
@@ -217,6 +221,14 @@ async function main(): Promise<void> {
     events: scanEvents,
     logger,
   });
+  // v1.9 — bulk-redact fetcher (filesystem only). Scheduled-scan
+  // runner wiring deferred until after the Mailer is constructed.
+  const scanFileFetcher = new FilesystemScanFileFetcher({
+    scanRoot: config.SCAN_ROOT,
+    scanJobs: scanJobStore,
+    logger,
+  });
+  const scheduledScanStore = new ScheduledScanStore(dbHandle.db);
 
   // Phase 24 — identity v2 wiring. Constructed unconditionally; the
   // auth routes themselves degrade gracefully when SMTP isn't set.
@@ -257,6 +269,23 @@ async function main(): Promise<void> {
       );
     }
   }
+
+  // v1.9 — scheduled-scan runner (mailer-dependent, so wired here).
+  const scheduledScanAlerter = new ScheduledScanAlerter({
+    logger,
+    ...(mailer !== undefined ? { mailer } : {}),
+    ...(config.PUBLIC_URL !== undefined ? { publicUrl: config.PUBLIC_URL } : {}),
+  });
+  const scheduledScanRunner = new ScheduledScanRunner({
+    scheduledScans: scheduledScanStore,
+    scanJobs: scanJobStore,
+    pipeline: scanPipeline,
+    alerter: scheduledScanAlerter,
+    logger,
+    scanRoot: config.SCAN_ROOT,
+    intervalMs: config.SCHEDULED_SCAN_INTERVAL_MS,
+  });
+  scheduledScanRunner.start();
 
   // Bootstrap admin: on first boot, when no *active* user exists AND
   // BOOTSTRAP_ADMIN_EMAIL is set, create that user as is_org_admin=true
@@ -332,6 +361,8 @@ async function main(): Promise<void> {
     scanPipeline,
     scanEvents,
     scanMaxUploadBytes: config.SCAN_MAX_UPLOAD_BYTES,
+    scanFileFetcher,
+    scheduledScans: scheduledScanStore,
     ...(mailer !== undefined ? { mailer } : {}),
     ...(config.PUBLIC_URL !== undefined ? { publicUrl: config.PUBLIC_URL } : {}),
     logger,

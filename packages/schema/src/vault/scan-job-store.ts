@@ -8,9 +8,10 @@
  * methods below.
  */
 
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../db/index.js';
 import { scanFiles, scanFindings, scanJobs } from '../schema/scan-jobs.js';
+import { scanRedactLinks } from '../schema/scan-redact-links.js';
 
 export type ScanJobStatus = 'pending' | 'running' | 'completed' | 'failed';
 export type ScanSeverity = 'low' | 'medium' | 'high';
@@ -56,6 +57,17 @@ export interface ScanFindingRecord {
   snippetRedacted: string;
   sampleHash: string;
   suppressed: boolean;
+  suppressedBy: string | null;
+  suppressedAt: Date | null;
+  suppressedReason: string | null;
+  createdAt: Date;
+}
+
+export interface ScanRedactLinkRecord {
+  id: string;
+  scanJobId: string;
+  scanFileId: string;
+  redactJobId: string;
   createdAt: Date;
 }
 
@@ -250,6 +262,7 @@ export class ScanJobStore {
     opts: {
       severity?: ScanSeverity;
       entityType?: string;
+      includeSuppressed?: boolean;
       limit?: number;
       offset?: number;
     } = {},
@@ -263,6 +276,9 @@ export class ScanJobStore {
     if (opts.entityType !== undefined) {
       conditions.push(eq(scanFindings.entityType, opts.entityType));
     }
+    if (opts.includeSuppressed !== true) {
+      conditions.push(eq(scanFindings.suppressed, false));
+    }
     const rows = await this.db
       .select()
       .from(scanFindings)
@@ -271,6 +287,150 @@ export class ScanJobStore {
       .limit(limit)
       .offset(offset);
     return rows.map(toFindingRecord);
+  }
+
+  async findFindingById(id: string): Promise<ScanFindingRecord | null> {
+    const rows = await this.db
+      .select()
+      .from(scanFindings)
+      .where(eq(scanFindings.id, id))
+      .limit(1);
+    const row = rows[0];
+    return row === undefined ? null : toFindingRecord(row);
+  }
+
+  /**
+   * v1.9 — suppress / unsuppress a finding. Suppressed findings stay
+   * in the DB (auditable) but are hidden from the default list view.
+   * Operators with `scan:operator+` can suppress; the audit row is
+   * the caller's responsibility (gateway emits it).
+   */
+  async setFindingSuppressed(
+    findingId: string,
+    suppressed: boolean,
+    actor: { userId: string | null; reason: string | null },
+  ): Promise<ScanFindingRecord | null> {
+    const [row] = await this.db
+      .update(scanFindings)
+      .set({
+        suppressed,
+        suppressedBy: suppressed ? actor.userId : null,
+        suppressedAt: suppressed ? new Date() : null,
+        suppressedReason: suppressed ? actor.reason : null,
+      })
+      .where(eq(scanFindings.id, findingId))
+      .returning();
+    return row === undefined ? null : toFindingRecord(row);
+  }
+
+  /**
+   * v1.9 — every distinct sample_hash for the job. Used by the
+   * compare-runs endpoint to diff two scans efficiently without
+   * pulling every row.
+   */
+  async listFindingHashes(jobId: string): Promise<
+    Array<{
+      sampleHash: string;
+      entityType: string;
+      severity: ScanSeverity;
+      path: string;
+    }>
+  > {
+    // Join findings → files so we can return the path alongside the
+    // hash. Suppressed findings excluded from the diff (they're
+    // operator-acknowledged).
+    const rows = await this.db
+      .select({
+        sampleHash: scanFindings.sampleHash,
+        entityType: scanFindings.entityType,
+        severity: scanFindings.severity,
+        path: scanFiles.path,
+      })
+      .from(scanFindings)
+      .innerJoin(scanFiles, eq(scanFindings.fileId, scanFiles.id))
+      .where(
+        and(
+          eq(scanFindings.jobId, jobId),
+          eq(scanFindings.suppressed, false),
+        ),
+      );
+    return rows.map((r) => ({
+      sampleHash: r.sampleHash,
+      entityType: r.entityType,
+      severity: r.severity as ScanSeverity,
+      path: r.path,
+    }));
+  }
+
+  /**
+   * v1.9 — files with at least one non-suppressed finding. Bulk-
+   * redact iterates this list and creates one Redact job per file.
+   */
+  async listFilesWithFindings(jobId: string): Promise<
+    Array<{ fileId: string; path: string; findingsCount: number }>
+  > {
+    const rows = await this.db
+      .select({
+        fileId: scanFindings.fileId,
+        path: scanFiles.path,
+        findingsCount: sql<number>`count(*)::int`.as('findings_count'),
+      })
+      .from(scanFindings)
+      .innerJoin(scanFiles, eq(scanFindings.fileId, scanFiles.id))
+      .where(
+        and(
+          eq(scanFindings.jobId, jobId),
+          eq(scanFindings.suppressed, false),
+        ),
+      )
+      .groupBy(scanFindings.fileId, scanFiles.path);
+    return rows;
+  }
+
+  async addRedactLink(input: {
+    scanJobId: string;
+    scanFileId: string;
+    redactJobId: string;
+  }): Promise<ScanRedactLinkRecord> {
+    const [row] = await this.db
+      .insert(scanRedactLinks)
+      .values({
+        scanJobId: input.scanJobId,
+        scanFileId: input.scanFileId,
+        redactJobId: input.redactJobId,
+      })
+      .returning();
+    if (row === undefined) throw new Error('insert returned no rows');
+    return {
+      id: row.id,
+      scanJobId: row.scanJobId,
+      scanFileId: row.scanFileId,
+      redactJobId: row.redactJobId,
+      createdAt: row.createdAt,
+    };
+  }
+
+  async listRedactLinks(scanJobId: string): Promise<ScanRedactLinkRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(scanRedactLinks)
+      .where(eq(scanRedactLinks.scanJobId, scanJobId));
+    return rows.map((r) => ({
+      id: r.id,
+      scanJobId: r.scanJobId,
+      scanFileId: r.scanFileId,
+      redactJobId: r.redactJobId,
+      createdAt: r.createdAt,
+    }));
+  }
+
+  async findFilesByIds(fileIds: string[]): Promise<ScanFileRecord[]> {
+    if (fileIds.length === 0) return [];
+    const rows = await this.db
+      .select()
+      .from(scanFiles)
+      .where(inArray(scanFiles.id, fileIds));
+    return rows.map(toFileRecord);
   }
 }
 
@@ -322,6 +482,9 @@ function toFindingRecord(
     snippetRedacted: row.snippetRedacted,
     sampleHash: row.sampleHash,
     suppressed: row.suppressed,
+    suppressedBy: row.suppressedBy,
+    suppressedAt: row.suppressedAt,
+    suppressedReason: row.suppressedReason,
     createdAt: row.createdAt,
   };
 }

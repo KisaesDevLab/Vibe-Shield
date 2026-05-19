@@ -90,4 +90,29 @@ export class Mailer {
   async verify(): Promise<void> {
     await this.transporter.verify();
   }
+
+  /**
+   * v1.9 — generic plaintext send. Used by the scheduled-scan
+   * alerter. Keeps the same plaintext-only posture as
+   * sendMagicLink — no HTML, no tracking.
+   */
+  async send(opts: { to: string; subject: string; text: string }): Promise<void> {
+    try {
+      await this.transporter.sendMail({
+        from: this.opts.from,
+        to: opts.to,
+        subject: opts.subject,
+        text: opts.text,
+      });
+    } catch (err) {
+      this.opts.logger.warn(
+        {
+          to_domain: opts.to.split('@')[1] ?? '?',
+          error_class: err instanceof Error ? err.name : 'Unknown',
+        },
+        'alert email send failed',
+      );
+      throw err;
+    }
+  }
 }

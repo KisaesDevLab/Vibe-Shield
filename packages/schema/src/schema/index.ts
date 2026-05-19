@@ -15,3 +15,5 @@ export * from './user-sessions.js';
 export * from './redact-batches.js';
 export * from './redact-jobs.js';
 export * from './scan-jobs.js';
+export * from './scan-redact-links.js';
+export * from './scheduled-scans.js';

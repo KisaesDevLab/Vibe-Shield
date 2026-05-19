@@ -393,8 +393,10 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
         from app.scan import (
             ArchiveScanner,
             CsvScanner,
+            EmlScanner,
+            ImagePdfScanner,
+            MboxScanner,
             OfficeDocScanner,
-            PdfTextScanner,
             PlainTextScanner,
             ScanContext,
             ScannerRegistry,
@@ -410,13 +412,24 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
         plain = PlainTextScanner()
         csv_s = CsvScanner()
         office = OfficeDocScanner()
-        pdf_s = PdfTextScanner()
-        # Build the inner-file registry first so the archive scanner
-        # can dispatch to it; then add the archive scanner that closes
-        # over that same registry.
+        # v1.9 — hybrid PDF scanner replaces v1.8's text-only path.
+        # Tries text layer per page; falls back to rasterize+OCR for
+        # pages without text.
+        pdf_s = ImagePdfScanner()
+        # v1.9 — email scanners. EmlScanner / MboxScanner share a
+        # registry handle so attachments dispatch back through the
+        # other scanners (and recursively into archives).
         inner_registry = ScannerRegistry([csv_s, office, pdf_s, plain])
+        eml = EmlScanner(inner_registry)
+        mbox = MboxScanner(inner_registry)
+        # Refresh the inner registry so email-in-zip dispatch works too.
+        inner_registry = ScannerRegistry([csv_s, office, pdf_s, eml, mbox, plain])
+        eml = EmlScanner(inner_registry)
+        mbox = MboxScanner(inner_registry)
         archive = ArchiveScanner(inner_registry)
-        full_registry = ScannerRegistry([archive, csv_s, office, pdf_s, plain])
+        full_registry = ScannerRegistry(
+            [archive, csv_s, office, pdf_s, eml, mbox, plain],
+        )
 
         runner = ScanRunner(analyzer=a, registry=full_registry, ctx=ScanContext())
 

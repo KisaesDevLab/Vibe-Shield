@@ -325,6 +325,70 @@ export class AdminClient {
     return this.request(`/v1/scan/jobs/${id}`, { method: 'DELETE' });
   }
 
+  // ----- Scan v1.9 — suppression / bulk-redact / compare -------
+
+  suppressFinding(
+    id: string,
+    reason?: string,
+  ): Promise<ScanFindingRow> {
+    return this.request(`/v1/scan/findings/${id}/suppress`, {
+      method: 'PUT',
+      body: reason !== undefined ? { reason } : {},
+    });
+  }
+
+  unsuppressFinding(id: string): Promise<ScanFindingRow> {
+    return this.request(`/v1/scan/findings/${id}/suppress`, {
+      method: 'DELETE',
+    });
+  }
+
+  bulkRedactScan(
+    jobId: string,
+  ): Promise<{
+    created: Array<{ scan_file_id: string; redact_job_id: string; path: string }>;
+    skipped: Array<{ path: string; reason: string }>;
+  }> {
+    return this.request(`/v1/scan/jobs/${jobId}/redact`, { method: 'POST' });
+  }
+
+  listScanRedactLinks(jobId: string): Promise<ScanRedactLinkRow[]> {
+    return this.request(`/v1/scan/jobs/${jobId}/redact-links`);
+  }
+
+  compareScans(
+    a: string,
+    b: string,
+  ): Promise<ScanCompareResponse> {
+    return this.request(`/v1/scan/compare?a=${a}&b=${b}`);
+  }
+
+  // ----- Scheduled scans (v1.9) ---------------------------------
+
+  listScheduledScans(): Promise<ScheduledScanRow[]> {
+    return this.request('/v1/scan/scheduled');
+  }
+
+  createScheduledScan(
+    input: ScheduledScanInput,
+  ): Promise<ScheduledScanRow> {
+    return this.request('/v1/scan/scheduled', { method: 'POST', body: input });
+  }
+
+  updateScheduledScan(
+    id: string,
+    patch: Partial<ScheduledScanInput>,
+  ): Promise<ScheduledScanRow> {
+    return this.request(`/v1/scan/scheduled/${id}`, {
+      method: 'PATCH',
+      body: patch,
+    });
+  }
+
+  deleteScheduledScan(id: string): Promise<void> {
+    return this.request(`/v1/scan/scheduled/${id}`, { method: 'DELETE' });
+  }
+
   // ----- API Keys -------------------------------------------------
 
   listApiKeys(): Promise<ApiKeyRow[]> {
@@ -564,5 +628,61 @@ export interface ScanFindingRow {
   snippet_redacted: string;
   sample_hash: string;
   suppressed: boolean;
+  suppressed_by: string | null;
+  suppressed_at: string | null;
+  suppressed_reason: string | null;
   created_at: string;
+}
+
+export interface ScanRedactLinkRow {
+  id: string;
+  scan_file_id: string;
+  redact_job_id: string;
+  created_at: string;
+}
+
+export interface ScanCompareHash {
+  sample_hash: string;
+  entity_type: string;
+  severity: 'low' | 'medium' | 'high';
+  path: string;
+}
+
+export interface ScanCompareResponse {
+  a: { id: string; source_name: string; created_at: string };
+  b: { id: string; source_name: string; created_at: string };
+  added: ScanCompareHash[];
+  removed: ScanCompareHash[];
+  persistent: ScanCompareHash[];
+}
+
+export interface ScheduledScanInput {
+  name: string;
+  source_kind?: 'filesystem';
+  source_ref: string;
+  cron_expression: string;
+  enabled?: boolean;
+  notify_emails?: string | null;
+  webhook_url?: string | null;
+  webhook_secret?: string | null;
+  alert_min_severity?: 'low' | 'medium' | 'high';
+}
+
+export interface ScheduledScanRow {
+  id: string;
+  user_id: string;
+  name: string;
+  source_kind: string;
+  source_ref: string;
+  cron_expression: string;
+  enabled: boolean;
+  last_run_at: string | null;
+  last_run_job_id: string | null;
+  next_run_at: string | null;
+  notify_emails: string | null;
+  webhook_url: string | null;
+  webhook_secret_set: boolean;
+  alert_min_severity: 'low' | 'medium' | 'high';
+  created_at: string;
+  updated_at: string;
 }

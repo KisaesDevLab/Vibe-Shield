@@ -307,6 +307,173 @@ describe.skipIf(!integrationEnabled)('Scan module (Phase 26 v1.8)', () => {
     expect(after.status).toBe(404);
   });
 
+  it('v1.9: suppress + unsuppress a finding', async () => {
+    const op = await users.create({ email: 'scan-suppress@firm.example' });
+    await users.setRole(op.id, 'scan', 'operator');
+    const cookie = await consumeMagicLink(app, magicLinks, 'scan-suppress@firm.example');
+    const upload = await request(app)
+      .post('/v1/scan/jobs')
+      .set('Cookie', cookie)
+      .attach('file', Buffer.from('hi'), { filename: 'a.txt', contentType: 'text/plain' });
+    const jobId = upload.body.id as string;
+    await pollUntilTerminal(app, cookie, jobId);
+
+    const list = await request(app)
+      .get(`/v1/scan/jobs/${jobId}/findings`)
+      .set('Cookie', cookie);
+    const findingId = (list.body as Array<{ id: string }>)[0]!.id;
+
+    // Suppress with a reason.
+    const sup = await request(app)
+      .put(`/v1/scan/findings/${findingId}/suppress`)
+      .set('Cookie', cookie)
+      .send({ reason: 'false positive — CPA firm uses sample SSN' });
+    expect(sup.status).toBe(200);
+    expect(sup.body.suppressed).toBe(true);
+    expect(sup.body.suppressed_reason).toContain('false positive');
+
+    // Default list hides it.
+    const hidden = await request(app)
+      .get(`/v1/scan/jobs/${jobId}/findings`)
+      .set('Cookie', cookie);
+    expect(hidden.body).toHaveLength(0);
+
+    // include_suppressed=true reveals it.
+    const shown = await request(app)
+      .get(`/v1/scan/jobs/${jobId}/findings?include_suppressed=true`)
+      .set('Cookie', cookie);
+    expect(shown.body).toHaveLength(1);
+
+    // Unsuppress restores.
+    const uns = await request(app)
+      .delete(`/v1/scan/findings/${findingId}/suppress`)
+      .set('Cookie', cookie);
+    expect(uns.status).toBe(200);
+    expect(uns.body.suppressed).toBe(false);
+  });
+
+  it('v1.9: compare-runs diffs by sample_hash', async () => {
+    const op = await users.create({ email: 'scan-compare@firm.example' });
+    await users.setRole(op.id, 'scan', 'operator');
+    const cookie = await consumeMagicLink(app, magicLinks, 'scan-compare@firm.example');
+
+    // Two scan runs with identical canned findings → no diff.
+    const u1 = await request(app)
+      .post('/v1/scan/jobs')
+      .set('Cookie', cookie)
+      .attach('file', Buffer.from('hi'), { filename: 'a.txt', contentType: 'text/plain' });
+    const u2 = await request(app)
+      .post('/v1/scan/jobs')
+      .set('Cookie', cookie)
+      .attach('file', Buffer.from('hi'), { filename: 'a.txt', contentType: 'text/plain' });
+    await pollUntilTerminal(app, cookie, u1.body.id as string);
+    await pollUntilTerminal(app, cookie, u2.body.id as string);
+
+    const cmp = await request(app)
+      .get(`/v1/scan/compare?a=${u1.body.id as string}&b=${u2.body.id as string}`)
+      .set('Cookie', cookie);
+    expect(cmp.status).toBe(200);
+    expect(cmp.body.persistent).toHaveLength(1);
+    expect(cmp.body.added).toHaveLength(0);
+    expect(cmp.body.removed).toHaveLength(0);
+  });
+
+  it('v1.9: bulk-redact returns 501 when no scan-file fetcher is configured', async () => {
+    // The default app fixture doesn't wire a fetcher.
+    const op = await users.create({ email: 'scan-bulk-no-fetch@firm.example' });
+    await users.setRole(op.id, 'scan', 'operator');
+    const cookie = await consumeMagicLink(app, magicLinks, 'scan-bulk-no-fetch@firm.example');
+    const upload = await request(app)
+      .post('/v1/scan/jobs')
+      .set('Cookie', cookie)
+      .attach('file', Buffer.from('hi'), { filename: 'a.txt', contentType: 'text/plain' });
+    const jobId = upload.body.id as string;
+    await pollUntilTerminal(app, cookie, jobId);
+
+    const r = await request(app)
+      .post(`/v1/scan/jobs/${jobId}/redact`)
+      .set('Cookie', cookie);
+    expect(r.status).toBe(501);
+  });
+
+  it('v1.9: scheduled scan CRUD round-trip', async () => {
+    const { ScheduledScanStore } = await import('@kisaesdevlab/vibe-shield-schema');
+    const scheduled = new ScheduledScanStore(handle.db);
+    const ssApp = createApp({
+      db: handle.db,
+      apiKeys: new ApiKeyStore(handle.db),
+      sessions: new SessionManager(handle.db),
+      vault: new TokenVault(handle.db, new StaticKeyResolver()),
+      engine: stubEngine(),
+      anthropic: stubAnthropic(emptyMessage()),
+      logger: silent,
+      maxRequestBytes: 32 * 1024 * 1024,
+      sessionTtlMinutes: 60,
+      adminKey: 'vs-admin-scan-test',
+      users,
+      userSessions: new UserSessionStore(handle.db, 60),
+      magicLinks,
+      audit: new AuditLogger(handle.db),
+      scanJobs: jobs,
+      scanPipeline: pipeline,
+      scheduledScans: scheduled,
+    });
+    const op = await users.create({ email: 'scan-sched@firm.example' });
+    await users.setRole(op.id, 'scan', 'operator');
+    const cookie = await consumeMagicLink(ssApp, magicLinks, 'scan-sched@firm.example');
+
+    const created = await request(ssApp)
+      .post('/v1/scan/scheduled')
+      .set('Cookie', cookie)
+      .send({
+        name: 'Nightly client folder',
+        source_ref: 'clients/2026/q1',
+        cron_expression: '0 6 * * *',
+        notify_emails: 'soc@firm.example',
+        alert_min_severity: 'medium',
+      });
+    expect(created.status).toBe(201);
+    expect(created.body.next_run_at).not.toBeNull();
+    expect(created.body.webhook_secret_set).toBe(false);
+
+    const id = created.body.id as string;
+
+    const list = await request(ssApp)
+      .get('/v1/scan/scheduled')
+      .set('Cookie', cookie);
+    expect(list.body).toHaveLength(1);
+
+    // Bad cron → 400.
+    const bad = await request(ssApp)
+      .post('/v1/scan/scheduled')
+      .set('Cookie', cookie)
+      .send({
+        name: 'broken',
+        source_ref: 'clients',
+        cron_expression: '99 99 * * *',
+      });
+    expect(bad.status).toBe(400);
+
+    // Patch enabled flag.
+    const patched = await request(ssApp)
+      .patch(`/v1/scan/scheduled/${id}`)
+      .set('Cookie', cookie)
+      .send({ enabled: false });
+    expect(patched.status).toBe(200);
+    expect(patched.body.enabled).toBe(false);
+
+    // Delete.
+    const del = await request(ssApp)
+      .delete(`/v1/scan/scheduled/${id}`)
+      .set('Cookie', cookie);
+    expect(del.status).toBe(204);
+
+    const after = await request(ssApp)
+      .get(`/v1/scan/scheduled/${id}`)
+      .set('Cookie', cookie);
+    expect(after.status).toBe(404);
+  });
+
   it('engine failure marks the job failed', async () => {
     const failingEngine = {
       redact: () => Promise.reject(new Error('n/a')),

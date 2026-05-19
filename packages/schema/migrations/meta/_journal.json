@@ -64,6 +64,13 @@
       "when": 1747872000000,
       "tag": "0008_scan_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1747958400000,
+      "tag": "0009_scan_extensions",
+      "breakpoints": true
     }
   ]
 }
