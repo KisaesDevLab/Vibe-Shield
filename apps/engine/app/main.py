@@ -243,8 +243,8 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
         """
         import hashlib
 
-        from pdf2image import convert_from_bytes  # type: ignore[import-untyped]
-        from pdf2image.exceptions import (  # type: ignore[import-untyped]
+        from pdf2image import convert_from_bytes
+        from pdf2image.exceptions import (
             PDFInfoNotInstalledError,
             PDFPageCountError,
             PDFSyntaxError,
