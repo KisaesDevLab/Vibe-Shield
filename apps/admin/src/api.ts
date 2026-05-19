@@ -223,6 +223,35 @@ export class AdminClient {
     return `${BASE}/v1/redact/jobs/${jobId}/artifacts/${kind}`;
   }
 
+  /** v1.7 — single-zip download of every artifact for one job. */
+  redactJobBundleUrl(jobId: string): string {
+    return `${BASE}/v1/redact/jobs/${jobId}/bundle`;
+  }
+
+  /** v1.7 — single-zip download of every completed job in a batch. */
+  redactBatchBundleUrl(batchId: string): string {
+    return `${BASE}/v1/redact/batches/${batchId}/bundle`;
+  }
+
+  /** v1.7 — re-run a failed job from its persisted source upload. */
+  retryRedactJob(id: string): Promise<RedactJobRow> {
+    return this.request(`/v1/redact/jobs/${id}/retry`, { method: 'POST' });
+  }
+
+  /** v1.6 — fetch a batch row + summary + child jobs. */
+  getRedactBatch(id: string): Promise<{
+    batch: RedactBatchRow;
+    summary: Record<'pending' | 'running' | 'completed' | 'failed', number>;
+    jobs: RedactJobRow[];
+  }> {
+    return this.request(`/v1/redact/batches/${id}`);
+  }
+
+  /** v1.7 — list recent batches for the signed-in user. */
+  listRedactBatches(limit = 50): Promise<RedactBatchRow[]> {
+    return this.request(`/v1/redact/batches?limit=${String(limit)}`);
+  }
+
   deleteRedactJob(id: string): Promise<void> {
     return this.request(`/v1/redact/jobs/${id}`, { method: 'DELETE' });
   }

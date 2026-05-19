@@ -25,7 +25,7 @@
  */
 
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import type { Stats } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 
@@ -232,6 +232,38 @@ export class JobStorage {
   async purgeJob(jobId: string): Promise<void> {
     const dir = this.jobDir(jobId);
     await rm(dir, { recursive: true, force: true });
+  }
+
+  /**
+   * Enumerate the per-page PNGs for a job, in 1-indexed page order.
+   * Returns `[]` if no pages/ subdir exists or it's empty. Used by the
+   * v1.7 bundle endpoint to add each page PNG to the zip.
+   */
+  async listPages(jobId: string): Promise<{ page: number; path: string }[]> {
+    const pagesDir = join(this.jobDir(jobId), 'pages');
+    let entries: string[];
+    try {
+      entries = await readdir(pagesDir);
+    } catch (err) {
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        (err as { code?: string }).code === 'ENOENT'
+      ) {
+        return [];
+      }
+      throw err;
+    }
+    const out: { page: number; path: string }[] = [];
+    for (const name of entries) {
+      const m = /^(\d+)\.png$/.exec(name);
+      if (m === null) continue;
+      const page = Number(m[1]);
+      if (!Number.isInteger(page) || page < 1) continue;
+      out.push({ page, path: join(pagesDir, name) });
+    }
+    out.sort((a, b) => a.page - b.page);
+    return out;
   }
 
   /** Extract the source's file extension from a filename safely. */

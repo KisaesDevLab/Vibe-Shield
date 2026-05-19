@@ -380,7 +380,7 @@ async function imagesToPdf(pngs: Buffer[]): Promise<Buffer> {
     page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
   }
   doc.setTitle('Vibe Shield — redacted');
-  doc.setProducer('Vibe Shield v1.5');
+  doc.setProducer('Vibe Shield v1.7');
   doc.setCreator('Vibe Shield');
   const bytes = await doc.save();
   return Buffer.from(bytes);

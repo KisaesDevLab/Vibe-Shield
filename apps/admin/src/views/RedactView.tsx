@@ -4,6 +4,7 @@ import {
   AdminApiError,
   type AdminClient,
   type MeResponse,
+  type RedactBatchRow,
   type RedactJobRow,
 } from '../api.js';
 
@@ -36,8 +37,10 @@ const ACCEPT_MIMES = new Set([
  */
 export function RedactView({ client, me }: Props): JSX.Element {
   const [history, setHistory] = useState<RedactJobRow[]>([]);
+  const [batches, setBatches] = useState<RedactBatchRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -50,8 +53,12 @@ export function RedactView({ client, me }: Props): JSX.Element {
 
   const refresh = async (): Promise<void> => {
     try {
-      const rows = await client.listRedactJobs(50);
+      const [rows, batchRows] = await Promise.all([
+        client.listRedactJobs(50),
+        client.listRedactBatches(50).catch(() => [] as RedactBatchRow[]),
+      ]);
       setHistory(rows);
+      setBatches(batchRows);
       if (selectedId === null && rows.length > 0) {
         setSelectedId(rows[0]!.id);
       }
@@ -84,9 +91,11 @@ export function RedactView({ client, me }: Props): JSX.Element {
       if (files.length === 1) {
         const job = await client.uploadRedact(files[0]!);
         setSelectedId(job.id);
+        setSelectedBatchId(null);
       } else {
-        const { jobs } = await client.uploadRedactBatch(files);
+        const { batch, jobs } = await client.uploadRedactBatch(files);
         if (jobs.length > 0) setSelectedId(jobs[0]!.id);
+        setSelectedBatchId(batch.id);
       }
       await refresh();
     } catch (e) {
@@ -114,6 +123,7 @@ export function RedactView({ client, me }: Props): JSX.Element {
   };
 
   const selected = history.find((j) => j.id === selectedId) ?? null;
+  const selectedBatch = batches.find((b) => b.id === selectedBatchId) ?? null;
 
   const deleteJob = async (id: string): Promise<void> => {
     if (!window.confirm('Delete this job? The redacted output and source upload will be removed from the appliance.')) {
@@ -126,6 +136,18 @@ export function RedactView({ client, me }: Props): JSX.Element {
     } catch (e) {
       setLoadError(
         e instanceof AdminApiError ? `${e.status}: ${e.message}` : 'delete failed',
+      );
+    }
+  };
+
+  const retryJob = async (id: string): Promise<void> => {
+    try {
+      const updated = await client.retryRedactJob(id);
+      setSelectedId(updated.id);
+      await refresh();
+    } catch (e) {
+      setUploadError(
+        e instanceof AdminApiError ? `${e.status}: ${e.message}` : 'retry failed',
       );
     }
   };
@@ -197,8 +219,23 @@ export function RedactView({ client, me }: Props): JSX.Element {
         </div>
       )}
 
+      {selectedBatch !== null && (
+        <BatchDetail
+          batch={selectedBatch}
+          client={client}
+          onClose={() => setSelectedBatchId(null)}
+          onUpdated={() => void refresh()}
+        />
+      )}
+
       {selected !== null && (
-        <JobDetail job={selected} client={client} onUpdated={() => void refresh()} />
+        <JobDetail
+          job={selected}
+          client={client}
+          canUpload={canUpload}
+          onUpdated={() => void refresh()}
+          onRetry={() => void retryJob(selected.id)}
+        />
       )}
 
       <h3 style={{ marginTop: 32 }}>History</h3>
@@ -263,11 +300,15 @@ export function RedactView({ client, me }: Props): JSX.Element {
 function JobDetail({
   job,
   client,
+  canUpload,
   onUpdated,
+  onRetry,
 }: {
   job: RedactJobRow;
   client: AdminClient;
+  canUpload: boolean;
   onUpdated?: () => void;
+  onRetry?: () => void;
 }): JSX.Element {
   // v1.5 — live SSE progress for running (typically PDF) jobs.
   const [pagesDone, setPagesDone] = useState<number>(0);
@@ -329,10 +370,17 @@ function JobDetail({
         <StatusPill status={job.status} />
       </div>
 
-      {job.status === 'failed' && job.error_message !== null && (
-        <p className="error" style={{ marginTop: 16 }}>
-          {job.error_message}
-        </p>
+      {job.status === 'failed' && (
+        <div style={{ marginTop: 16 }}>
+          {job.error_message !== null && (
+            <p className="error" style={{ margin: '0 0 12px 0' }}>
+              {job.error_message}
+            </p>
+          )}
+          {canUpload && (
+            <button onClick={onRetry}>Retry redaction</button>
+          )}
+        </div>
       )}
 
       {(job.status === 'pending' || job.status === 'running') && (
@@ -372,11 +420,14 @@ function JobDetail({
             Downloads:
           </p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <a href={client.redactJobBundleUrl(job.id)} download>
+              <button>Bundle (.zip)</button>
+            </a>
             <a
               href={client.redactArtifactUrl(job.id, 'redacted')}
               download
             >
-              <button>Redacted PDF</button>
+              <button className="secondary">Redacted PDF</button>
             </a>
             <a href={client.redactArtifactUrl(job.id, 'extracted_md')} download>
               <button className="secondary">Extracted text (.md)</button>
@@ -392,10 +443,158 @@ function JobDetail({
             </a>
           </div>
           <p className="muted" style={{ marginTop: 16, fontSize: 12 }}>
-            Auto-expires {new Date(job.expires_at).toLocaleDateString()}.
+            Bundle includes all of the above plus a per-page PNG set and the
+            audit log. Auto-expires {new Date(job.expires_at).toLocaleDateString()}.
             Artifacts are stored encrypted-at-rest on the appliance volume.
           </p>
         </div>
+      )}
+    </div>
+  );
+}
+
+interface BatchDetailProps {
+  batch: RedactBatchRow;
+  client: AdminClient;
+  onClose: () => void;
+  onUpdated?: () => void;
+}
+
+function BatchDetail({
+  batch,
+  client,
+  onClose,
+  onUpdated,
+}: BatchDetailProps): JSX.Element {
+  const [summary, setSummary] = useState<
+    Record<'pending' | 'running' | 'completed' | 'failed', number> | null
+  >(null);
+  const [childJobs, setChildJobs] = useState<RedactJobRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let stopped = false;
+    const tick = async (): Promise<void> => {
+      try {
+        const res = await client.getRedactBatch(batch.id);
+        if (stopped) return;
+        setSummary(res.summary);
+        setChildJobs(res.jobs);
+        setError(null);
+        if (res.summary.pending === 0 && res.summary.running === 0) {
+          onUpdated?.();
+        }
+      } catch (e) {
+        if (stopped) return;
+        setError(
+          e instanceof AdminApiError ? `${e.status}: ${e.message}` : 'batch fetch failed',
+        );
+      }
+    };
+    void tick();
+    // Poll every 2s until every child job is terminal. The per-job
+    // detail SSE drives the page-level progress bar; this is just the
+    // batch-level aggregate.
+    const interval = setInterval(() => void tick(), 2000);
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+    };
+  }, [batch.id]);
+
+  const total = batch.total_jobs;
+  const done =
+    summary === null ? 0 : summary.completed + summary.failed;
+  const allTerminal =
+    summary !== null && summary.pending === 0 && summary.running === 0;
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+        }}
+      >
+        <div>
+          <h3 style={{ margin: '0 0 4px 0' }}>
+            Batch · {batch.name ?? `${total.toString()} files`}
+          </h3>
+          <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+            <code style={{ fontSize: 11 }}>{batch.id}</code> · started{' '}
+            {new Date(batch.created_at).toLocaleString()}
+          </p>
+        </div>
+        <button className="secondary" onClick={onClose}>
+          Close
+        </button>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <div
+          style={{
+            background: '#e5e7eb',
+            borderRadius: 4,
+            height: 8,
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              background: allTerminal ? '#10b981' : '#4f46e5',
+              height: '100%',
+              width: `${((done / total) * 100).toFixed(0)}%`,
+              transition: 'width 220ms ease-out',
+            }}
+          />
+        </div>
+        {summary !== null && (
+          <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+            {summary.completed.toString()} done · {summary.failed.toString()} failed ·{' '}
+            {summary.running.toString()} running · {summary.pending.toString()} pending
+          </p>
+        )}
+      </div>
+
+      {error !== null && <p className="error" style={{ marginTop: 12 }}>{error}</p>}
+
+      {allTerminal && summary !== null && summary.completed > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <a href={client.redactBatchBundleUrl(batch.id)} download>
+            <button>Download all completed (.zip)</button>
+          </a>
+        </div>
+      )}
+
+      {childJobs.length > 0 && (
+        <details style={{ marginTop: 16 }}>
+          <summary className="muted" style={{ cursor: 'pointer', fontSize: 12 }}>
+            Per-file status
+          </summary>
+          <table style={{ marginTop: 8 }}>
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>Status</th>
+                <th>Pages</th>
+              </tr>
+            </thead>
+            <tbody>
+              {childJobs.map((j) => (
+                <tr key={j.id}>
+                  <td style={{ fontSize: 13 }}>{j.filename}</td>
+                  <td>
+                    <StatusPill status={j.status} />
+                  </td>
+                  <td className="muted" style={{ fontSize: 12 }}>
+                    {j.pages_count ?? '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
       )}
     </div>
   );

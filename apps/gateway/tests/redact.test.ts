@@ -599,6 +599,162 @@ describe.skipIf(!integrationEnabled)('Redact module (Phase 17 v1.4–v1.6)', () 
     expect(resp.pdf_sha256).toBe('abc');
   });
 
+  it('v1.7: per-job bundle returns a zip containing every artifact', async () => {
+    const op = await users.create({ email: 'bundle-op@firm.example' });
+    await users.setRole(op.id, 'redact', 'operator');
+    const cookie = await consumeMagicLink(app, magicLinks, 'bundle-op@firm.example');
+
+    const upload = await request(app)
+      .post('/v1/redact/jobs')
+      .set('Cookie', cookie)
+      .attach('file', SAMPLE_PNG, { filename: 'bundle.png', contentType: 'image/png' });
+    const jobId = upload.body.id as string;
+
+    const bundle = await request(app)
+      .get(`/v1/redact/jobs/${jobId}/bundle`)
+      .set('Cookie', cookie)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      });
+    expect(bundle.status).toBe(200);
+    expect(bundle.headers['content-type']).toContain('application/zip');
+    expect(bundle.headers['content-disposition']).toContain('bundle-bundle.zip');
+    const body = bundle.body as Buffer;
+    // ZIP local-file-header magic.
+    expect(body.subarray(0, 4)).toEqual(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    // The zip should mention each expected entry name somewhere in
+    // the central directory (entries are stored in plain text).
+    const asText = body.toString('binary');
+    expect(asText).toContain('README.txt');
+    expect(asText).toContain('redacted.pdf');
+    expect(asText).toContain('extracted.md');
+    expect(asText).toContain('extracted.json');
+    expect(asText).toContain('audit.jsonl');
+    expect(asText).toContain('pages/1.png');
+    expect(asText).toContain('source.png');
+  });
+
+  it('v1.7: retry on a failed job re-runs the pipeline from the persisted source', async () => {
+    // First failure: build a pipeline whose engine rejects exactly once.
+    let calls = 0;
+    const flakyEngine = {
+      redact: () => Promise.reject(new Error('not used')),
+      analyze: () => Promise.reject(new Error('not used')),
+      health: () => Promise.resolve({ status: 'ok', model_loaded: true }),
+      redactImage: () => {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.reject(new Error('engine flake'));
+        }
+        return Promise.resolve(DEFAULT_ENGINE_RESP);
+      },
+    } as unknown as EngineClient;
+    const flakyPipeline = new RedactPipeline({
+      jobs,
+      engine: flakyEngine,
+      storage,
+      audit: new AuditLogger(handle.db),
+      logger: silent,
+    });
+    const flakyApp = createApp({
+      db: handle.db,
+      apiKeys: new ApiKeyStore(handle.db),
+      sessions: new SessionManager(handle.db),
+      vault: new TokenVault(handle.db, new StaticKeyResolver()),
+      engine: stubEngine(),
+      anthropic: stubAnthropic(emptyMessage()),
+      logger: silent,
+      maxRequestBytes: 32 * 1024 * 1024,
+      sessionTtlMinutes: 60,
+      adminKey: 'vs-admin-redact-test',
+      users,
+      userSessions: new UserSessionStore(handle.db, 60),
+      magicLinks,
+      audit: new AuditLogger(handle.db),
+      redactJobs: jobs,
+      redactStorage: storage,
+      redactPipeline: flakyPipeline,
+      redactMaxUploadBytes: 25 * 1024 * 1024,
+    });
+    const op = await users.create({ email: 'retry-op@firm.example' });
+    await users.setRole(op.id, 'redact', 'operator');
+    const cookie = await consumeMagicLink(flakyApp, magicLinks, 'retry-op@firm.example');
+
+    const upload = await request(flakyApp)
+      .post('/v1/redact/jobs')
+      .set('Cookie', cookie)
+      .attach('file', SAMPLE_PNG, { filename: 'retry.png', contentType: 'image/png' });
+    expect(upload.body.status).toBe('failed');
+    const jobId = upload.body.id as string;
+
+    const retry = await request(flakyApp)
+      .post(`/v1/redact/jobs/${jobId}/retry`)
+      .set('Cookie', cookie);
+    expect(retry.status).toBe(200);
+    expect(retry.body.status).toBe('completed');
+    expect(retry.body.error_message).toBeNull();
+  });
+
+  it('v1.7: retry refuses jobs not in failed state', async () => {
+    const op = await users.create({ email: 'retry-bad@firm.example' });
+    await users.setRole(op.id, 'redact', 'operator');
+    const cookie = await consumeMagicLink(app, magicLinks, 'retry-bad@firm.example');
+    const upload = await request(app)
+      .post('/v1/redact/jobs')
+      .set('Cookie', cookie)
+      .attach('file', SAMPLE_PNG, { filename: 'ok.png', contentType: 'image/png' });
+    const jobId = upload.body.id as string;
+    const r = await request(app)
+      .post(`/v1/redact/jobs/${jobId}/retry`)
+      .set('Cookie', cookie);
+    expect(r.status).toBe(400);
+    expect(r.body.error.message).toContain('only failed jobs');
+  });
+
+  it('v1.7: batch bundle includes one PDF per completed child + a summary CSV', async () => {
+    const op = await users.create({ email: 'batch-bundle@firm.example' });
+    await users.setRole(op.id, 'redact', 'operator');
+    const cookie = await consumeMagicLink(app, magicLinks, 'batch-bundle@firm.example');
+    const r = await request(app)
+      .post('/v1/redact/batches')
+      .set('Cookie', cookie)
+      .attach('files', SAMPLE_PNG, { filename: 'b1.png', contentType: 'image/png' })
+      .attach('files', SAMPLE_PNG, { filename: 'b2.png', contentType: 'image/png' });
+    const batchId = r.body.batch.id as string;
+
+    // Wait for drain.
+    for (let i = 0; i < 30; i++) {
+      const det = await request(app)
+        .get(`/v1/redact/batches/${batchId}`)
+        .set('Cookie', cookie);
+      const s = det.body.summary as { completed: number };
+      if (s.completed === 2) break;
+      await new Promise((res) => setTimeout(res, 50));
+    }
+
+    const bundle = await request(app)
+      .get(`/v1/redact/batches/${batchId}/bundle`)
+      .set('Cookie', cookie)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      });
+    expect(bundle.status).toBe(200);
+    expect(bundle.headers['content-type']).toContain('application/zip');
+    const body = bundle.body as Buffer;
+    expect(body.subarray(0, 4)).toEqual(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    const asText = body.toString('binary');
+    expect(asText).toContain('README.txt');
+    expect(asText).toContain('summary.csv');
+    expect(asText).toContain('b1-redacted.pdf');
+    expect(asText).toContain('b2-redacted.pdf');
+  });
+
   it('engine failure marks the job failed and surfaces the error', async () => {
     const failingPipeline = new RedactPipeline({
       jobs,
