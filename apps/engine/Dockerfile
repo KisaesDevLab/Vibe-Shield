@@ -65,6 +65,9 @@ RUN apt-get update \
         libzbar0 \
         libgl1 \
         libglib2.0-0 \
+        # v1.5: poppler-utils provides pdftoppm + pdfinfo, used by
+        # pdf2image to rasterize PDF pages to PNGs. ~50 MB added.
+        poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Enable v1.1 image backends by default in the production image.

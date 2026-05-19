@@ -101,3 +101,30 @@ class RedactImageResponse(BaseModel):
     redacted_text: str
     tokens: list[TokenAllocationModel]
     masked_regions: list[MaskedRegionModel]
+
+
+class RedactPdfPage(BaseModel):
+    """v1.5 — one entry per PDF page after rasterization + redaction."""
+
+    page_number: int
+    masked_image_sha256: str
+    masked_image_base64: str
+    redacted_text: str
+    tokens: list[TokenAllocationModel]
+    masked_regions: list[MaskedRegionModel]
+
+
+class RedactPdfResponse(BaseModel):
+    """v1.5 — multi-page PDF redaction. The gateway reassembles the
+    per-page masked PNGs into a single PDF on its side via pdf-lib;
+    the engine just emits the structured per-page data."""
+
+    pdf_sha256: str
+    pages_count: int
+    pages: list[RedactPdfPage]
+    # Concatenated token map across all pages, useful for audit + the
+    # extracted.json artifact. Within a single request the tokenizer
+    # is per-page, so tokens may repeat (e.g., <PERSON_1>) across
+    # pages with different cleartext mappings. Page-scoped tokens are
+    # in the per-page entries.
+    tokens_concatenated: list[TokenAllocationModel]

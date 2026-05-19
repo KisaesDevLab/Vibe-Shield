@@ -4,6 +4,38 @@ All notable changes to Vibe Shield are recorded here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-05-18
+
+### Added — Phase 17 v1.5: PDF redaction + SSE progress + artifact-purge cron
+
+PDF support arrives. Multi-page bank statements / 1099 packs / signed engagement letters get the same OCR + Presidio + face/signature/barcode treatment as single images, with real-time per-page progress in the SPA and automatic expiry-driven artifact cleanup.
+
+- **Engine** — Dockerfile adds `poppler-utils` (~50 MB; provides `pdftoppm` + `pdfinfo`). `pdf2image==1.17.0` Python dep. New endpoint `POST /redact-pdf` accepts `{pdf_base64, dpi}` (DPI bounded 72-600, default 200), rasterizes pages, runs the existing image pipeline per page, returns structured per-page results + concatenated token map. Fails closed: any poppler / pdf2image / per-page error raises a 503 — the gateway never persists a partial result as completed.
+- **Engine client** — `EngineClient.redactPdf(bytes, opts)`. 30-minute upper-bound timeout (≈30s/page worst case at 200 DPI on a NucBox M6); async path means HTTP doesn't actually block that long.
+- **Gateway pipeline** — `RedactPipeline.run()` branches on MIME. Image path unchanged. PDF path calls `/redact-pdf`, writes per-page PNGs under `pages/`, assembles a multi-page redacted PDF via `pdf-lib` (one page per PNG, preserves dimensions), writes `extracted.md` with per-page sections and a concatenated token map. Per-page audit JSONL entries.
+- **Async + SSE** — `RedactJobEvents` in-memory event broker. Upload route returns `202 Accepted` immediately for PDFs (the synchronous HTTP path stays for single images). New `GET /v1/redact/jobs/:id/stream` Server-Sent Events endpoint with `event: snapshot` on connect (catches up late subscribers) + live `page_started` / `page_completed` / `job_completed` / `job_failed` events. Heartbeat every 30s so intermediaries don't tear down idle connections. The SPA's `RedactView` consumes via `EventSource` and shows a per-page progress bar.
+- **Purge cron** — `RedactPurgeCron` walks `RedactJobStore.findExpired()` hourly (configurable via `REDACT_PURGE_INTERVAL_MS`; 0 disables). Removes the on-disk directory + the DB row + writes a `redact_artifact_purged` audit event tagged `actorType: 'system'`. Failed jobs are kept for diagnosis.
+- **Admin SPA** — `RedactView` accepts `.pdf` in the dropzone, shows per-page progress bar driven by SSE, and surfaces `pages_count` in the job detail header. Upload limit bumped 25 MB → 50 MB.
+- **Config additions** — `REDACT_PURGE_INTERVAL_MS` (default 1h), `REDACT_MAX_UPLOAD_BYTES` default raised to 50 MB.
+- **Appliance integration** — `docker-compose.fragment.yml` wires the new envs. `env.example` documents them. `manifest.json` `defaultTag` bumped to `v1.5.0`. The existing `vibe-shield-redact` named volume now also stores PDF-derived per-page rasters; no manifest change needed.
+
+### Verification
+
+**397 tests pass** against real Postgres + Redis — 11 redact integration tests now (8 from v1.4 + 3 new for v1.5):
+
+- PDF upload → 202 + async pipeline → polling shows `completed` with `pages_count: 3` → assembled multi-page PDF downloads with valid `%PDF` header.
+- Purge cron forced via past-expiry update + manual `runOnce()` removes both disk dir and DB row; subsequent GET returns 404.
+- SSE stream: snapshot event for completed job + terminal `job_completed` event, stream closes cleanly.
+
+Plus the existing v1.4 suite (no-session 401, no-role 403, image happy path, MIME rejection, viewer-only denial, org_admin cross-user, DELETE purge, engine-failure capture).
+
+### Operator notes
+
+- **PDF rasterization runs on the engine, not the gateway.** Update the engine image first (the appliance handles this via `vibe update vibe-shield`, which pulls all three images as a unit).
+- The `/redact-pdf` engine endpoint refuses if `poppler-utils` isn't installed — the v1.5 engine image bundles it. If you build a custom engine image without poppler, PDF uploads will surface a 503 with `pdf rasterization failed`.
+- The purge cron emits a `session_purge` audit row with `module='redact'`, `actorType='system'`, payload `{action: 'redact_artifact_purged', job_id, user_id, age_days}` for each cleaned job. Useful for compliance review.
+- Existing v1.4 jobs aren't affected by the upgrade; their on-disk layout is forward-compatible.
+
 ## [1.4.0] — 2026-05-18
 
 ### Added — Phase 17 v1.4: user-facing Redact UI

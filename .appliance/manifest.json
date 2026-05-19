@@ -9,7 +9,7 @@
   "image": {
     "server":     "ghcr.io/kisaesdevlab/vibe-shield-gateway",
     "client":     "ghcr.io/kisaesdevlab/vibe-shield-admin",
-    "defaultTag": "v1.4.0",
+    "defaultTag": "v1.5.0",
     "extras": [
       { "name": "engine", "image": "ghcr.io/kisaesdevlab/vibe-shield-engine" }
     ]

@@ -38,6 +38,7 @@ import type { PromptRegistry } from './prompts/registry.js';
 import type { RateLimiter } from './quota/rate-limiter.js';
 import type { SpendTracker } from './quota/spend-cap.js';
 import type { SpendRateLimiter } from './quota/spend-rate-limiter.js';
+import type { RedactJobEvents } from './redact/job-events.js';
 import type { RedactPipeline } from './redact/pipeline.js';
 import type { JobStorage } from './redact/storage.js';
 import { adminRouter } from './routes/admin.js';
@@ -104,7 +105,9 @@ export interface AppDeps {
   redactJobs?: RedactJobStore;
   redactStorage?: JobStorage;
   redactPipeline?: RedactPipeline;
-  /** Per-upload byte cap for /v1/redact/jobs. Default 25 MB. */
+  /** v1.5 — event broker for SSE progress. */
+  redactEvents?: RedactJobEvents;
+  /** Per-upload byte cap for /v1/redact/jobs. Default 50 MB (v1.5). */
   redactMaxUploadBytes?: number;
 }
 
@@ -251,6 +254,9 @@ export function createApp(deps: AppDeps): Express {
         logger: deps.logger,
         ...(deps.redactMaxUploadBytes !== undefined
           ? { maxUploadBytes: deps.redactMaxUploadBytes }
+          : {}),
+        ...(deps.redactEvents !== undefined
+          ? { events: deps.redactEvents }
           : {}),
       }),
     );

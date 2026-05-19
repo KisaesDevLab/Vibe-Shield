@@ -38,6 +38,7 @@ import {
   JobStorage,
   type ArtifactKind,
 } from '../redact/storage.js';
+import type { RedactJobEvents } from '../redact/job-events.js';
 
 export interface RedactRoutesDeps {
   jobs: RedactJobStore;
@@ -46,15 +47,23 @@ export interface RedactRoutesDeps {
   logger: Logger;
   /** Per-upload byte cap. Default 25 MB. */
   maxUploadBytes?: number;
+  /** v1.5 — event broker for SSE progress. Optional in tests. */
+  events?: RedactJobEvents;
+  /** v1.5 — sync threshold. Anything at-or-below runs sync (HTTP
+   *  waits for the result); anything above returns 201 immediately
+   *  and runs in the background. PDFs always run async. Default 1
+   *  (single-image always sync; PDFs always async). */
+  syncMaxPages?: number;
 }
 
-/** Whitelist of source MIME types accepted by v1.4. */
+/** Whitelist of source MIME types. v1.5 adds application/pdf. */
 const ALLOWED_MIMES = new Set([
   'image/png',
   'image/jpeg',
   'image/webp',
   'image/tiff',
   'image/bmp',
+  'application/pdf',
 ]);
 
 const ARTIFACT_KINDS: Set<ArtifactKind> = new Set([
@@ -87,7 +96,7 @@ export function redactRouter(deps: RedactRoutesDeps): Router {
         }
         if (!ALLOWED_MIMES.has(file.mimetype)) {
           throw new InvalidRequestError(
-            `unsupported file type: ${file.mimetype}. v1.4 supports PNG/JPEG/WebP/TIFF/BMP; PDF lands in v1.5.`,
+            `unsupported file type: ${file.mimetype}. Accepts PNG/JPEG/WebP/TIFF/BMP/PDF.`,
           );
         }
         const filename = sanitizeFilename(file.originalname);
@@ -100,16 +109,110 @@ export function redactRouter(deps: RedactRoutesDeps): Router {
           sourceSizeBytes: file.size,
         });
 
-        // v1.4 runs synchronously. The pipeline never throws — it
-        // captures failures into the job row.
+        // v1.5: PDFs always async (page count can be high; sync HTTP
+        // would block the connection for minutes). Images always sync
+        // (one engine call, ~5-15s). The SPA polls or subscribes to
+        // /stream for async jobs.
+        const isAsync = file.mimetype === 'application/pdf';
+
+        if (isAsync) {
+          // Fire-and-forget; the pipeline captures any failure into
+          // the row. The route returns the pending record immediately.
+          void deps.pipeline
+            .run(
+              job,
+              file.buffer,
+              ext,
+              req.header('x-correlation-id') ?? undefined,
+            )
+            .catch(() => undefined);
+          res.status(202).json(jobToWire(job));
+          return;
+        }
+
         const finished = await deps.pipeline.run(
           job,
           file.buffer,
           ext,
-          (req.header('x-correlation-id') ?? undefined),
+          req.header('x-correlation-id') ?? undefined,
         );
-
         res.status(201).json(jobToWire(finished));
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  // v1.5 — SSE progress stream. Connect after upload to watch a PDF
+  // job complete page by page.
+  router.get('/v1/redact/jobs/:id/stream', (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasRedactRole(req.user, 'viewer')) {
+          throw new PermissionError('redact viewer role required');
+        }
+        if (deps.events === undefined) {
+          throw new InvalidRequestError('SSE stream not configured on this deployment');
+        }
+        const id = req.params.id ?? '';
+        const job = await fetchOwnedJob(deps.jobs, id, req.user);
+
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache, no-store');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
+        res.flushHeaders();
+
+        const send = (event: { type: string; data: unknown }): void => {
+          res.write(`event: ${event.type}\n`);
+          res.write(`data: ${JSON.stringify(event.data)}\n\n`);
+        };
+
+        // Replay current state so a late subscriber sees what's
+        // already known. We DON'T replay events — we just sync the
+        // current status. The next live event progresses from there.
+        send({
+          type: 'snapshot',
+          data: {
+            job_id: job.id,
+            status: job.status,
+            pages_count: job.pagesCount,
+          },
+        });
+
+        if (job.status === 'completed' || job.status === 'failed') {
+          send({
+            type: job.status === 'completed' ? 'job_completed' : 'job_failed',
+            data: {
+              job_id: job.id,
+              error_message: job.errorMessage,
+            },
+          });
+          res.end();
+          return;
+        }
+
+        const unsubscribe = deps.events.subscribe(job.id, (event) => {
+          send({ type: event.type, data: event });
+          if (event.type === 'job_completed' || event.type === 'job_failed') {
+            // Close the stream after the terminal event so the
+            // browser's EventSource doesn't auto-reconnect.
+            setTimeout(() => res.end(), 50);
+          }
+        });
+
+        // Heartbeat every 30s so intermediaries don't tear down the
+        // connection on idle.
+        const heartbeat = setInterval(() => {
+          res.write(': heartbeat\n\n');
+        }, 30_000);
+        heartbeat.unref();
+
+        req.on('close', () => {
+          clearInterval(heartbeat);
+          unsubscribe();
+        });
       } catch (err) {
         next(err);
       }

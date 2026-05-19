@@ -267,9 +267,13 @@ Integration plan documented at `compliance/integrations/mybooks.md` (commit 3175
 
 Plan at `compliance/integrations/tb.md`. Tax-code crosswalk + JE narrative routing through gateway. Open.
 
-### Phase 17 — Image redaction pipeline **[shipped, v1.4]**
+### Phase 17 — Image + PDF redaction pipeline **[shipped, v1.5]**
 
-End-to-end user-facing UI shipped: drag-and-drop image upload, status tracking, per-artifact downloads, history view. Backing pipeline: gateway multipart upload route → engine `/redact-image` (OCR + face + signature + barcode masking) → pdf-lib PDF wrap → per-job artifact directory on the appliance volume. `vs_redact_jobs` table + `RedactJobStore` + crash recovery via `reapStaleRunning()`. RBAC via `requires('redact', <role>)`. Open: PDF input (v1.5), image QA corpus + recall gates, P95 latency budget on NucBox M6.
+End-to-end user-facing UI:
+- **v1.4** — drag-and-drop image upload, status tracking, per-artifact downloads, history view. Image pipeline: gateway → engine `/redact-image` → pdf-lib wrap → per-job artifact dir.
+- **v1.5** — PDF support (poppler-utils + pdf2image in engine; new `/redact-pdf` endpoint), async upload path with 202 Accepted, SSE progress stream with per-page events, multi-page PDF assembly via pdf-lib, artifact-purge cron walking expired completed jobs hourly. Upload cap raised to 50 MB.
+
+`vs_redact_jobs` table + `RedactJobStore` + crash recovery via `reapStaleRunning()`. RBAC via `requires('redact', <role>)`. Open: image QA corpus + recall gates, P95 latency budget on NucBox M6, streaming per-page response from engine (currently engine returns all pages at once; per-page streaming would let the gateway emit SSE earlier).
 
 ### Phase 18 — Vibe Tax Research Chat & GLM-OCR integration
 

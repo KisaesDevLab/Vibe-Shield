@@ -36,6 +36,9 @@ dependencies = [
     "pytesseract==0.3.13",
     "opencv-python-headless==4.10.0.84",
     "pyzbar==0.1.9",
+    # v1.5: PDF rasterization. Requires poppler-utils in the runtime
+    # image (Dockerfile installs it).
+    "pdf2image==1.17.0",
 ]
 
 [dependency-groups]

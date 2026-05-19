@@ -12,7 +12,7 @@ interface Props {
   me: MeResponse;
 }
 
-const ACCEPT = '.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp,image/*';
+const ACCEPT = '.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp,.pdf,image/*,application/pdf';
 const ACCEPT_MIMES = new Set([
   'image/png',
   'image/jpeg',
@@ -20,6 +20,7 @@ const ACCEPT_MIMES = new Set([
   'image/webp',
   'image/tiff',
   'image/bmp',
+  'application/pdf',
 ]);
 
 /**
@@ -70,7 +71,7 @@ export function RedactView({ client, me }: Props): JSX.Element {
     setUploadError(null);
     if (!ACCEPT_MIMES.has(file.type)) {
       setUploadError(
-        `Unsupported file type: ${file.type || 'unknown'}. v1.4 accepts PNG/JPEG/WebP/TIFF/BMP. PDF support arrives in v1.5.`,
+        `Unsupported file type: ${file.type || 'unknown'}. Accepts PNG, JPEG, WebP, TIFF, BMP, or PDF.`,
       );
       return;
     }
@@ -122,11 +123,11 @@ export function RedactView({ client, me }: Props): JSX.Element {
     <div>
       <h2>Redact a document</h2>
       <p className="muted">
-        Drop an image; we'll run OCR + Presidio + face / signature /
-        barcode detection and give you back the redacted PDF, an
-        extracted-text Markdown file, and a JSON token map. Cleartext
-        stays on this appliance — only opaque tokens are sent if you
-        later ship the result to Anthropic.
+        Drop an image or a PDF; we'll run OCR + Presidio + face /
+        signature / barcode detection page-by-page and give you back
+        the redacted PDF, an extracted-text Markdown file, and a JSON
+        token map. Cleartext stays on this appliance — only opaque
+        tokens are sent if you later ship the result to Anthropic.
       </p>
 
       {!canUpload && (
@@ -161,7 +162,7 @@ export function RedactView({ client, me }: Props): JSX.Element {
             {uploading ? 'Redacting…' : 'Drop an image here'}
           </p>
           <p className="muted" style={{ margin: '0 0 16px 0', fontSize: 13 }}>
-            PNG, JPEG, WebP, TIFF, BMP · up to 25 MB
+            PNG, JPEG, WebP, TIFF, BMP, or PDF · up to 50 MB
           </p>
           <button
             disabled={uploading}
@@ -184,7 +185,9 @@ export function RedactView({ client, me }: Props): JSX.Element {
         </div>
       )}
 
-      {selected !== null && <JobDetail job={selected} client={client} />}
+      {selected !== null && (
+        <JobDetail job={selected} client={client} onUpdated={() => void refresh()} />
+      )}
 
       <h3 style={{ marginTop: 32 }}>History</h3>
       {loadError !== null && <p className="error">{loadError}</p>}
@@ -245,7 +248,56 @@ export function RedactView({ client, me }: Props): JSX.Element {
   );
 }
 
-function JobDetail({ job, client }: { job: RedactJobRow; client: AdminClient }): JSX.Element {
+function JobDetail({
+  job,
+  client,
+  onUpdated,
+}: {
+  job: RedactJobRow;
+  client: AdminClient;
+  onUpdated?: () => void;
+}): JSX.Element {
+  // v1.5 — live SSE progress for running (typically PDF) jobs.
+  const [pagesDone, setPagesDone] = useState<number>(0);
+  const [totalPages, setTotalPages] = useState<number | null>(
+    job.pages_count,
+  );
+  useEffect(() => {
+    if (job.status !== 'pending' && job.status !== 'running') return;
+    const es = new EventSource(
+      `${(import.meta.env.BASE_URL || '/').replace(/\/$/, '')}/v1/redact/jobs/${job.id}/stream`,
+      { withCredentials: true },
+    );
+    const onProgress = (e: MessageEvent): void => {
+      try {
+        const data = JSON.parse(e.data) as {
+          page?: number;
+          totalPages?: number;
+        };
+        if (typeof data.page === 'number') setPagesDone(data.page);
+        if (typeof data.totalPages === 'number') setTotalPages(data.totalPages);
+      } catch {
+        // ignore
+      }
+    };
+    es.addEventListener('page_completed', onProgress);
+    es.addEventListener('page_started', onProgress);
+    es.addEventListener('snapshot', onProgress);
+    const close = (): void => {
+      es.close();
+      onUpdated?.();
+    };
+    es.addEventListener('job_completed', close);
+    es.addEventListener('job_failed', close);
+    es.onerror = (): void => {
+      // Browser auto-reconnects on transient errors; we'll let it.
+    };
+    return () => {
+      es.close();
+    };
+
+  }, [job.id, job.status]);
+
   return (
     <div className="card" style={{ marginTop: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -254,6 +306,12 @@ function JobDetail({ job, client }: { job: RedactJobRow; client: AdminClient }):
           <p className="muted" style={{ margin: 0, fontSize: 12 }}>
             <code style={{ fontSize: 11 }}>{job.id}</code> · {job.mime} ·{' '}
             {formatBytes(job.source_size_bytes)}
+            {totalPages !== null && totalPages > 0 && (
+              <>
+                {' · '}
+                {totalPages.toString()} page{totalPages === 1 ? '' : 's'}
+              </>
+            )}
           </p>
         </div>
         <StatusPill status={job.status} />
@@ -263,6 +321,37 @@ function JobDetail({ job, client }: { job: RedactJobRow; client: AdminClient }):
         <p className="error" style={{ marginTop: 16 }}>
           {job.error_message}
         </p>
+      )}
+
+      {(job.status === 'pending' || job.status === 'running') && (
+        <div style={{ marginTop: 16 }}>
+          {totalPages !== null && totalPages > 0 ? (
+            <>
+              <div
+                style={{
+                  background: '#e5e7eb',
+                  borderRadius: 4,
+                  height: 8,
+                  overflow: 'hidden',
+                }}
+              >
+                <div
+                  style={{
+                    background: '#4f46e5',
+                    height: '100%',
+                    width: `${((pagesDone / totalPages) * 100).toFixed(0)}%`,
+                    transition: 'width 220ms ease-out',
+                  }}
+                />
+              </div>
+              <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+                Page {pagesDone.toString()} of {totalPages.toString()}
+              </p>
+            </>
+          ) : (
+            <p className="muted">Redacting…</p>
+          )}
+        </div>
       )}
 
       {job.status === 'completed' && (
@@ -295,12 +384,6 @@ function JobDetail({ job, client }: { job: RedactJobRow; client: AdminClient }):
             Artifacts are stored encrypted-at-rest on the appliance volume.
           </p>
         </div>
-      )}
-
-      {job.status === 'running' && (
-        <p className="muted" style={{ marginTop: 16 }}>
-          Redacting… (this typically takes 5–15 seconds per image).
-        </p>
       )}
     </div>
   );
