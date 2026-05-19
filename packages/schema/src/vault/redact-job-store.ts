@@ -29,6 +29,8 @@ export interface RedactJobRecord {
   finishedAt: Date | null;
   createdAt: Date;
   expiresAt: Date;
+  /** v1.6 — batch this job belongs to (null for single-file uploads). */
+  batchId: string | null;
 }
 
 export interface CreateRedactJobInput {
@@ -36,6 +38,8 @@ export interface CreateRedactJobInput {
   filename: string;
   mime: string;
   sourceSizeBytes: number;
+  /** v1.6 — link to a batch row. Omit for single-file uploads. */
+  batchId?: string;
 }
 
 export class RedactJobNotFoundError extends Error {
@@ -53,12 +57,23 @@ export class RedactJobStore {
         filename: input.filename,
         mime: input.mime,
         sourceSizeBytes: input.sourceSizeBytes,
+        ...(input.batchId !== undefined ? { batchId: input.batchId } : {}),
       })
       .returning();
     if (row === undefined) {
       throw new Error('insert returned no rows');
     }
     return toRecord(row);
+  }
+
+  /** v1.6 — list every job in a batch, ordered by id (effectively
+   *  insertion order). */
+  async listForBatch(batchId: string): Promise<RedactJobRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(redactJobs)
+      .where(eq(redactJobs.batchId, batchId));
+    return rows.map(toRecord);
   }
 
   async findById(id: string): Promise<RedactJobRecord | null> {
@@ -186,5 +201,6 @@ function toRecord(row: typeof redactJobs.$inferSelect): RedactJobRecord {
     finishedAt: row.finishedAt,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
+    batchId: row.batchId,
   };
 }

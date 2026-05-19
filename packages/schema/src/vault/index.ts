@@ -95,3 +95,9 @@ export type {
   RedactJobRecord,
   RedactJobStatus,
 } from './redact-job-store.js';
+
+export { RedactBatchStore } from './redact-batch-store.js';
+export type {
+  CreateRedactBatchInput,
+  RedactBatchRecord,
+} from './redact-batch-store.js';

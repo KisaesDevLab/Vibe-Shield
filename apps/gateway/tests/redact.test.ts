@@ -22,6 +22,7 @@ import {
   ApiKeyStore,
   AuditLogger,
   MagicLinkStore,
+  RedactBatchStore,
   RedactJobStore,
   SessionManager,
   TokenVault,
@@ -66,10 +67,24 @@ function makeEngineStub(
     analyze: () => Promise.reject(new Error('not used')),
     health: () => Promise.resolve({ status: 'ok', model_loaded: true }),
     redactImage: () => Promise.resolve(canned),
-    redactPdf: () =>
-      pdfCanned !== undefined
-        ? Promise.resolve(pdfCanned)
-        : Promise.reject(new Error('no PDF stub')),
+    // v1.6 — the pipeline now consumes per-page events via onPage,
+    // so the stub fires the callback per page (synchronously) before
+    // resolving with the aggregated response. Matches the real
+    // streaming client's contract.
+    redactPdf: (
+      _bytes: Buffer,
+      opts: { onPage?: (p: import('../src/engine/client.js').RedactPdfPage) => void } = {},
+    ) => {
+      if (pdfCanned === undefined) {
+        return Promise.reject(new Error('no PDF stub'));
+      }
+      if (opts.onPage !== undefined) {
+        for (const page of pdfCanned.pages) {
+          opts.onPage(page);
+        }
+      }
+      return Promise.resolve(pdfCanned);
+    },
   } as unknown as EngineClient;
 }
 
@@ -103,13 +118,14 @@ async function consumeMagicLink(
   return `${SESSION_COOKIE_NAME}=${decodeURIComponent(m[1]!)}`;
 }
 
-describe.skipIf(!integrationEnabled)('Redact module (Phase 17 v1.4)', () => {
+describe.skipIf(!integrationEnabled)('Redact module (Phase 17 v1.4–v1.6)', () => {
   let handle: DatabaseHandle;
   let tmpDir: string;
   let storage: JobStorage;
   let users: UserStore;
   let magicLinks: MagicLinkStore;
   let jobs: RedactJobStore;
+  let batches: RedactBatchStore;
   let engine: EngineClient;
   let pipeline: RedactPipeline;
   let app: ReturnType<typeof createApp>;
@@ -121,6 +137,7 @@ describe.skipIf(!integrationEnabled)('Redact module (Phase 17 v1.4)', () => {
     users = new UserStore(handle.db);
     magicLinks = new MagicLinkStore(handle.db, 15);
     jobs = new RedactJobStore(handle.db);
+    batches = new RedactBatchStore(handle.db);
     engine = makeEngineStub(DEFAULT_ENGINE_RESP);
     pipeline = new RedactPipeline({
       jobs,
@@ -147,6 +164,7 @@ describe.skipIf(!integrationEnabled)('Redact module (Phase 17 v1.4)', () => {
       redactJobs: jobs,
       redactStorage: storage,
       redactPipeline: pipeline,
+      redactBatches: batches,
       redactMaxUploadBytes: 25 * 1024 * 1024,
     });
   });
@@ -468,6 +486,117 @@ describe.skipIf(!integrationEnabled)('Redact module (Phase 17 v1.4)', () => {
     expect(sse.text).toContain('event: snapshot');
     // Completed-on-arrival → terminal job_completed event included.
     expect(sse.text).toContain('event: job_completed');
+  });
+
+  it('v1.6: bulk upload creates a batch + N jobs sharing batch_id', async () => {
+    const op = await users.create({ email: 'bulk-op@firm.example' });
+    await users.setRole(op.id, 'redact', 'operator');
+    const cookie = await consumeMagicLink(app, magicLinks, 'bulk-op@firm.example');
+
+    const r = await request(app)
+      .post('/v1/redact/batches')
+      .set('Cookie', cookie)
+      .field('name', 'Q1 client batch')
+      .attach('files', SAMPLE_PNG, { filename: 'one.png', contentType: 'image/png' })
+      .attach('files', SAMPLE_PNG, { filename: 'two.png', contentType: 'image/png' })
+      .attach('files', SAMPLE_PNG, { filename: 'three.png', contentType: 'image/png' });
+    expect(r.status).toBe(202);
+    expect(r.body.batch.total_jobs).toBe(3);
+    expect(r.body.batch.name).toBe('Q1 client batch');
+    expect(r.body.jobs).toHaveLength(3);
+    const batchId = r.body.batch.id as string;
+    for (const job of r.body.jobs as { batch_id: string }[]) {
+      expect(job.batch_id).toBe(batchId);
+    }
+
+    // Sequential drain finishes within a second for stubbed engine.
+    let summary = { completed: 0, failed: 0, pending: 0, running: 0 };
+    for (let i = 0; i < 30; i++) {
+      const det = await request(app)
+        .get(`/v1/redact/batches/${batchId}`)
+        .set('Cookie', cookie);
+      summary = det.body.summary as typeof summary;
+      if (summary.completed + summary.failed === 3) break;
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    expect(summary.completed).toBe(3);
+  });
+
+  it('v1.6: non-owner cannot read another user\'s batch (returns 404 to hide existence)', async () => {
+    const owner = await users.create({ email: 'batch-owner@firm.example' });
+    await users.setRole(owner.id, 'redact', 'operator');
+    const ownerCookie = await consumeMagicLink(app, magicLinks, 'batch-owner@firm.example');
+    const created = await request(app)
+      .post('/v1/redact/batches')
+      .set('Cookie', ownerCookie)
+      .attach('files', SAMPLE_PNG, { filename: 'a.png', contentType: 'image/png' });
+    const batchId = created.body.batch.id as string;
+
+    const stranger = await users.create({ email: 'stranger@firm.example' });
+    await users.setRole(stranger.id, 'redact', 'operator');
+    const strangerCookie = await consumeMagicLink(app, magicLinks, 'stranger@firm.example');
+    const r = await request(app)
+      .get(`/v1/redact/batches/${batchId}`)
+      .set('Cookie', strangerCookie);
+    expect(r.status).toBe(404);
+  });
+
+  it('v1.6: streaming /redact-pdf consumer aggregates pages and yields each via onPage', async () => {
+    // Construct a real EngineClient against a stub fetch that emits
+    // NDJSON chunks with a tiny delay between pages.
+    const ndjsonLines = [
+      JSON.stringify({
+        type: 'page',
+        page_number: 1,
+        total_pages: 2,
+        masked_image_sha256: 'p1',
+        masked_image_base64: SAMPLE_PNG.toString('base64'),
+        redacted_text: 'first',
+        tokens: [],
+        masked_regions: [],
+      }) + '\n',
+      JSON.stringify({
+        type: 'page',
+        page_number: 2,
+        total_pages: 2,
+        masked_image_sha256: 'p2',
+        masked_image_base64: SAMPLE_PNG.toString('base64'),
+        redacted_text: 'second',
+        tokens: [],
+        masked_regions: [],
+      }) + '\n',
+      JSON.stringify({
+        type: 'summary',
+        pdf_sha256: 'abc',
+        pages_count: 2,
+        tokens_concatenated: [],
+      }) + '\n',
+    ];
+    const fakeFetch: typeof fetch = async () => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          for (const line of ndjsonLines) {
+            controller.enqueue(encoder.encode(line));
+            await new Promise((res) => setTimeout(res, 10));
+          }
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'application/x-ndjson' },
+      });
+    };
+    const { EngineClient } = await import('../src/engine/client.js');
+    const ec = new EngineClient({ baseUrl: 'http://fake', fetchImpl: fakeFetch });
+    const pagesSeen: number[] = [];
+    const resp = await ec.redactPdf(Buffer.from('%PDF-1.4'), {
+      onPage: (p) => pagesSeen.push(p.page_number),
+    });
+    expect(pagesSeen).toEqual([1, 2]);
+    expect(resp.pages_count).toBe(2);
+    expect(resp.pdf_sha256).toBe('abc');
   });
 
   it('engine failure marks the job failed and surfaces the error', async () => {

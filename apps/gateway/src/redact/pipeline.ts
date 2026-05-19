@@ -236,41 +236,58 @@ export class RedactPipeline {
     // page_started+page_completed pair around the engine call to
     // show *something* to the SPA; per-page granularity would
     // require a streaming engine response which is v1.6 scope.
-    this.emitEvent({
-      jobId: job.id,
-      type: 'page_started',
-      page: 1,
-      ts: new Date().toISOString(),
-    });
+    // v1.6 — engine streams page-by-page. We persist each page +
+    // emit its SSE event the moment the page lands, rather than
+    // batching at the end. ``totalPages`` is known after the first
+    // page (engine includes it in every line).
+    const pngBuffersInOrder: { page: number; png: Buffer }[] = [];
+    let totalPagesSeen: number | undefined;
     const engineResp: RedactPdfResponse = await this.deps.engine.redactPdf(sourceBytes, {
       ...(correlationId !== undefined ? { correlationId } : {}),
+      onPage: (page) => {
+        if (totalPagesSeen === undefined && page.total_pages !== undefined) {
+          totalPagesSeen = page.total_pages;
+          // Fire-and-forget; pages_count update isn't on the request
+          // path's critical chain.
+          void this.deps.jobs
+            .markRunning(job.id, page.total_pages)
+            .catch(() => undefined);
+        }
+        const png = Buffer.from(page.masked_image_base64, 'base64');
+        pngBuffersInOrder.push({ page: page.page_number, png });
+        void this.deps.storage
+          .writePage(job.id, page.page_number, png)
+          .catch(() => undefined);
+        this.emitEvent({
+          jobId: job.id,
+          type: 'page_completed',
+          page: page.page_number,
+          ...(totalPagesSeen !== undefined ? { totalPages: totalPagesSeen } : {}),
+          tokensCount: page.tokens.length,
+          ts: new Date().toISOString(),
+        });
+        void this.deps.storage
+          .appendAudit(job.id, {
+            event: 'page_complete',
+            page_number: page.page_number,
+            masked_image_sha256: page.masked_image_sha256,
+            tokens_count: page.tokens.length,
+            regions_count: page.masked_regions.length,
+            ts: new Date().toISOString(),
+          })
+          .catch(() => undefined);
+      },
     });
-    // Now we know the page count — update the row.
+    // After the stream completes the row should already carry the
+    // page count, but set it again defensively in case the engine
+    // emitted zero pages (no images to redact).
     await this.deps.jobs.markRunning(job.id, engineResp.pages_count);
 
-    // Write per-page PNGs + accumulate the assembled PDF.
-    const pngBuffers: Buffer[] = [];
-    for (const page of engineResp.pages) {
-      const png = Buffer.from(page.masked_image_base64, 'base64');
-      pngBuffers.push(png);
-      await this.deps.storage.writePage(job.id, page.page_number, png);
-      this.emitEvent({
-        jobId: job.id,
-        type: 'page_completed',
-        page: page.page_number,
-        totalPages: engineResp.pages_count,
-        tokensCount: page.tokens.length,
-        ts: new Date().toISOString(),
-      });
-      await this.deps.storage.appendAudit(job.id, {
-        event: 'page_complete',
-        page_number: page.page_number,
-        masked_image_sha256: page.masked_image_sha256,
-        tokens_count: page.tokens.length,
-        regions_count: page.masked_regions.length,
-        ts: new Date().toISOString(),
-      });
-    }
+    // pngBuffersInOrder was populated by onPage but may be out of
+    // page-number order if the engine ever parallelizes (today it
+    // doesn't). Sort defensively before pdf-lib assembly.
+    pngBuffersInOrder.sort((a, b) => a.page - b.page);
+    const pngBuffers = pngBuffersInOrder.map((p) => p.png);
 
     const redactedPdf = await imagesToPdf(pngBuffers);
     await this.deps.storage.writeArtifact(job.id, 'redacted', redactedPdf);

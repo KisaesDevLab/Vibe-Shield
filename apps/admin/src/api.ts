@@ -151,6 +151,37 @@ export class AdminClient {
 
   // ----- Redact module (Phase 17 v1.4) ---------------------------
 
+  /** v1.6 — bulk upload. Returns the batch + array of jobs. */
+  async uploadRedactBatch(
+    files: File[],
+    name?: string,
+  ): Promise<{ batch: RedactBatchRow; jobs: RedactJobRow[] }> {
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    if (name !== undefined) fd.append('name', name);
+    const headers: Record<string, string> = {};
+    if (this.adminKey !== undefined) {
+      headers['X-Admin-Key'] = this.adminKey;
+    }
+    const res = await fetch(`${BASE}/v1/redact/batches`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers,
+      body: fd,
+    });
+    if (!res.ok) {
+      let message = `batch upload returned ${String(res.status)}`;
+      try {
+        const body = (await res.json()) as { error?: { message?: string } };
+        if (body.error?.message !== undefined) message = body.error.message;
+      } catch {
+        // ignore
+      }
+      throw new AdminApiError(message, res.status, '/v1/redact/batches');
+    }
+    return (await res.json()) as { batch: RedactBatchRow; jobs: RedactJobRow[] };
+  }
+
   async uploadRedact(file: File): Promise<RedactJobRow> {
     const fd = new FormData();
     fd.append('file', file);
@@ -381,4 +412,15 @@ export interface RedactJobRow {
   started_at: string | null;
   finished_at: string | null;
   expires_at: string;
+  /** v1.6 — batch this job belongs to (null for single-file uploads). */
+  batch_id: string | null;
+}
+
+/** v1.6 — bulk-redact batch. */
+export interface RedactBatchRow {
+  id: string;
+  user_id: string;
+  name: string | null;
+  total_jobs: number;
+  created_at: string;
 }

@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.responses import StreamingResponse
 
 from app import __version__
 from app.analyzer import AnalyzerService
@@ -29,7 +30,6 @@ from app.schemas import (
     RecognizersResponse,
     RedactImageResponse,
     RedactPdfPage,
-    RedactPdfResponse,
     RedactRequest,
     RedactResponse,
     TokenAllocationModel,
@@ -226,22 +226,35 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
             ],
         )
 
-    @app.post("/redact-pdf", response_model=RedactPdfResponse)
+    @app.post("/redact-pdf")
     def redact_pdf(
         body: dict[str, object],
         a: AnalyzerService = Depends(get_analyzer),
-    ) -> RedactPdfResponse:
-        """v1.5 — multi-page PDF redaction.
+    ) -> StreamingResponse:
+        """v1.5 — multi-page PDF redaction. v1.6 streams.
 
         Body: ``{"pdf_base64": <b64>, "dpi": <int|default 200>}``.
-        Returns per-page masked PNGs + token maps; the gateway
-        reassembles the PDF on its side via pdf-lib.
 
-        Hard rule: fails closed. A bad PDF, a missing poppler, or any
-        per-page error raises a 503 — we never return a partial result
-        that the gateway could mistakenly persist as ``completed``.
+        Response format (v1.6): newline-delimited JSON.
+
+        - One ``{"type":"page", ...RedactPdfPage}`` line per page,
+          emitted *as soon as the page finishes* (not after the whole
+          PDF is processed). Lets the gateway forward per-page
+          progress to its SSE subscribers in real time.
+        - A final ``{"type":"summary", "pdf_sha256": ...,
+          "pages_count": N, "tokens_concatenated": [...]}`` line
+          carries the cross-page aggregate.
+
+        Content-Type: ``application/x-ndjson``.
+
+        Hard rule: fails closed. Bad PDF / missing poppler / per-page
+        error → the stream emits a final ``{"type":"error", ...}``
+        line and the connection closes with a 5xx if no bytes have
+        been sent yet, or a clean error envelope mid-stream otherwise.
+        The gateway treats any ``error`` line as a job failure.
         """
         import hashlib
+        import json
 
         from pdf2image import convert_from_bytes
         from pdf2image.exceptions import (
@@ -259,53 +272,93 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
             raise ValueError("dpi must be between 72 and 600")
         pdf_bytes = base64.b64decode(b64)
         pdf_sha = hashlib.sha256(pdf_bytes).hexdigest()
+
+        # Rasterize up-front so any poppler failure surfaces before we
+        # commit to a streaming response (the client can still get a
+        # proper 5xx body). Per-page redaction runs lazily in the
+        # generator so each page emits its NDJSON line ASAP.
         try:
             images = convert_from_bytes(pdf_bytes, dpi=dpi, fmt="png")
         except (PDFInfoNotInstalledError, PDFPageCountError, PDFSyntaxError) as e:
-            # PDFInfoNotInstalledError means poppler-utils is missing
-            # from the image — fail closed loudly so an operator fixes
-            # the build, never silently degrade to image-only.
             raise RuntimeError(f"pdf rasterization failed: {e!s}") from e
 
         redactor = _get_image_redactor(a)
-        pages: list[RedactPdfPage] = []
-        all_tokens: list[TokenAllocationModel] = []
-        from io import BytesIO
+        total_pages = len(images)
 
-        for i, img in enumerate(images, start=1):
-            buf = BytesIO()
-            img.save(buf, format="PNG")
-            page_bytes = buf.getvalue()
-            result = redactor.redact(page_bytes)
-            page = RedactPdfPage(
-                page_number=i,
-                masked_image_sha256=result.masked_image_sha256,
-                masked_image_base64=base64.b64encode(result.masked_image_bytes).decode("ascii"),
-                redacted_text=result.redacted_text,
-                tokens=[
-                    TokenAllocationModel(token=t, entity_type=et, cleartext=ct)
-                    for (t, et, ct) in result.tokens
-                ],
-                masked_regions=[
-                    MaskedRegionModel(
-                        entity_type=r.entity_type,
-                        token=r.token,
-                        x=r.x,
-                        y=r.y,
-                        width=r.width,
-                        height=r.height,
+        from collections.abc import Iterator
+
+        def stream() -> Iterator[str]:
+            from io import BytesIO
+
+            all_tokens: list[TokenAllocationModel] = []
+            try:
+                for i, img in enumerate(images, start=1):
+                    buf = BytesIO()
+                    img.save(buf, format="PNG")
+                    page_bytes = buf.getvalue()
+                    result = redactor.redact(page_bytes)
+                    page = RedactPdfPage(
+                        page_number=i,
+                        masked_image_sha256=result.masked_image_sha256,
+                        masked_image_base64=base64.b64encode(result.masked_image_bytes).decode(
+                            "ascii"
+                        ),
+                        redacted_text=result.redacted_text,
+                        tokens=[
+                            TokenAllocationModel(token=t, entity_type=et, cleartext=ct)
+                            for (t, et, ct) in result.tokens
+                        ],
+                        masked_regions=[
+                            MaskedRegionModel(
+                                entity_type=r.entity_type,
+                                token=r.token,
+                                x=r.x,
+                                y=r.y,
+                                width=r.width,
+                                height=r.height,
+                            )
+                            for r in result.masked_regions
+                        ],
                     )
-                    for r in result.masked_regions
-                ],
-            )
-            pages.append(page)
-            all_tokens.extend(page.tokens)
+                    all_tokens.extend(page.tokens)
+                    yield (
+                        json.dumps(
+                            {
+                                "type": "page",
+                                "total_pages": total_pages,
+                                **page.model_dump(),
+                            }
+                        )
+                        + "\n"
+                    )
+                yield (
+                    json.dumps(
+                        {
+                            "type": "summary",
+                            "pdf_sha256": pdf_sha,
+                            "pages_count": total_pages,
+                            "tokens_concatenated": [t.model_dump() for t in all_tokens],
+                        }
+                    )
+                    + "\n"
+                )
+            except Exception as exc:
+                # Mid-stream failure: the gateway sees the error line
+                # and marks the job failed. We can't change HTTP status
+                # once headers are flushed, so this is the only path.
+                yield (
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "message": f"{type(exc).__name__}: {exc!s}",
+                        }
+                    )
+                    + "\n"
+                )
 
-        return RedactPdfResponse(
-            pdf_sha256=pdf_sha,
-            pages_count=len(pages),
-            pages=pages,
-            tokens_concatenated=all_tokens,
+        return StreamingResponse(
+            stream(),
+            media_type="application/x-ndjson",
         )
 
     return app

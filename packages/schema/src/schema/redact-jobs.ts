@@ -8,6 +8,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import { redactBatches } from './redact-batches.js';
 import { users } from './users.js';
 
 /**
@@ -45,9 +46,14 @@ export const redactJobs = pgTable(
     expiresAt: timestamp('expires_at', { withTimezone: true })
       .notNull()
       .default(sql`now() + interval '30 days'`),
+    /** v1.6 — bulk-redact batch link. NULL for single-file uploads. */
+    batchId: uuid('batch_id').references(() => redactBatches.id, {
+      onDelete: 'set null',
+    }),
   },
   (table) => [
     index('vs_redact_jobs_user_idx').on(table.userId, table.createdAt),
+    index('vs_redact_jobs_batch_idx').on(table.batchId),
   ],
 );
 

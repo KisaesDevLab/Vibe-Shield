@@ -22,6 +22,8 @@ import multer from 'multer';
 import type { Logger } from 'pino';
 import {
   RedactJobNotFoundError,
+  type RedactBatchRecord,
+  type RedactBatchStore,
   type RedactJobRecord,
   type RedactJobStore,
 } from '@kisaesdevlab/vibe-shield-schema';
@@ -29,6 +31,7 @@ import {
   AuthenticationError,
   InvalidRequestError,
   NotFoundError,
+  NotImplementedError,
   PermissionError,
 } from '../errors.js';
 import type { RedactPipeline } from '../redact/pipeline.js';
@@ -54,6 +57,9 @@ export interface RedactRoutesDeps {
    *  and runs in the background. PDFs always run async. Default 1
    *  (single-image always sync; PDFs always async). */
   syncMaxPages?: number;
+  /** v1.6 — bulk-redact batch store. When undefined, the
+   *  /v1/redact/batches routes refuse with 501. */
+  batches?: RedactBatchStore;
 }
 
 /** Whitelist of source MIME types. v1.5 adds application/pdf. */
@@ -320,6 +326,154 @@ export function redactRouter(deps: RedactRoutesDeps): Router {
     })();
   });
 
+  // v1.6 — bulk-redact. POST /v1/redact/batches accepts up to 50
+  // files in one multipart upload; we create one batch row + one
+  // job per file (all share batch_id) and process them
+  // sequentially (engine is heavy; parallel would OOM).
+  const batchUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: maxUploadBytes, files: 50 },
+  });
+
+  router.post('/v1/redact/batches', batchUpload.array('files', 50), (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasRedactRole(req.user, 'operator')) {
+          throw new PermissionError('redact operator role required');
+        }
+        if (deps.batches === undefined) {
+          throw new NotImplementedError('bulk-redact not configured on this deployment');
+        }
+        const files = (req as { files?: Express.Multer.File[] }).files ?? [];
+        if (files.length === 0) {
+          throw new InvalidRequestError(
+            'at least one file required (multipart field "files")',
+          );
+        }
+        for (const f of files) {
+          if (!ALLOWED_MIMES.has(f.mimetype)) {
+            throw new InvalidRequestError(
+              `unsupported file type: ${f.mimetype} (${f.originalname}). Accepts PNG/JPEG/WebP/TIFF/BMP/PDF.`,
+            );
+          }
+        }
+        const name = sanitizeBatchName(
+          typeof req.body === 'object' && req.body !== null
+            ? (req.body as { name?: unknown }).name
+            : undefined,
+        );
+        const batch = await deps.batches.create({
+          userId: req.user.id,
+          totalJobs: files.length,
+          ...(name !== undefined ? { name } : {}),
+        });
+
+        // Create all jobs up front so the response contains every id;
+        // sequential pipeline drain runs in the background.
+        const jobs: RedactJobRecord[] = [];
+        for (const f of files) {
+          const job = await deps.jobs.create({
+            userId: req.user.id,
+            filename: sanitizeFilename(f.originalname),
+            mime: f.mimetype,
+            sourceSizeBytes: f.size,
+            batchId: batch.id,
+          });
+          jobs.push(job);
+        }
+        // Sequential drain. Fire-and-forget; each job captures its
+        // own failures.
+        void (async (): Promise<void> => {
+          for (let i = 0; i < jobs.length; i++) {
+            const job = jobs[i]!;
+            const file = files[i]!;
+            const ext = JobStorage.safeExt(job.filename);
+            await deps.pipeline
+              .run(
+                job,
+                file.buffer,
+                ext,
+                req.header('x-correlation-id') ?? undefined,
+              )
+              .catch(() => undefined);
+          }
+        })();
+
+        res.status(202).json({
+          batch: batchToWire(batch),
+          jobs: jobs.map(jobToWire),
+        });
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.get('/v1/redact/batches', (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasRedactRole(req.user, 'viewer')) {
+          throw new PermissionError('redact viewer role required');
+        }
+        if (deps.batches === undefined) {
+          res.json([]);
+          return;
+        }
+        const limitRaw =
+          typeof req.query['limit'] === 'string'
+            ? Number(req.query['limit'])
+            : undefined;
+        const limit =
+          limitRaw !== undefined && Number.isFinite(limitRaw) ? limitRaw : 50;
+        const rows = await deps.batches.listForUser(req.user.id, limit);
+        res.json(rows.map(batchToWire));
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
+  router.get('/v1/redact/batches/:id', (req, res, next) => {
+    void (async () => {
+      try {
+        if (req.user === undefined) throw new AuthenticationError('sign-in required');
+        if (!hasRedactRole(req.user, 'viewer')) {
+          throw new PermissionError('redact viewer role required');
+        }
+        if (deps.batches === undefined) throw new NotFoundError('batch');
+        const id = req.params.id ?? '';
+        const batch = await deps.batches.findById(id);
+        if (batch === null) throw new NotFoundError('batch');
+        if (
+          !isOrgAdminOrRedactAdmin(req.user) &&
+          batch.userId !== req.user.id
+        ) {
+          // Hide existence from non-owners.
+          throw new NotFoundError('batch');
+        }
+        const childJobs = await deps.jobs.listForBatch(batch.id);
+        const summary = {
+          completed: 0,
+          failed: 0,
+          pending: 0,
+          running: 0,
+        } as Record<RedactJobRecord['status'], number>;
+        for (const j of childJobs) {
+          summary[j.status] += 1;
+        }
+        res.json({
+          batch: batchToWire(batch),
+          summary,
+          jobs: childJobs.map(jobToWire),
+        });
+      } catch (err) {
+        next(err);
+      }
+    })();
+  });
+
   router.delete('/v1/redact/jobs/:id', (req, res, next) => {
     void (async () => {
       try {
@@ -355,7 +509,24 @@ function jobToWire(j: RedactJobRecord) {
     started_at: j.startedAt?.toISOString() ?? null,
     finished_at: j.finishedAt?.toISOString() ?? null,
     expires_at: j.expiresAt.toISOString(),
+    batch_id: j.batchId,
   };
+}
+
+function batchToWire(b: RedactBatchRecord) {
+  return {
+    id: b.id,
+    user_id: b.userId,
+    name: b.name,
+    total_jobs: b.totalJobs,
+    created_at: b.createdAt.toISOString(),
+  };
+}
+
+function sanitizeBatchName(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim().slice(0, 200);
+  return trimmed.length === 0 ? undefined : trimmed;
 }
 
 function hasRedactRole(

@@ -13,6 +13,7 @@ import type {
   Database,
   MagicLinkStore,
   RecognizerMissStore,
+  RedactBatchStore,
   RedactJobStore,
   SessionManager,
   TokenVault,
@@ -107,6 +108,8 @@ export interface AppDeps {
   redactPipeline?: RedactPipeline;
   /** v1.5 — event broker for SSE progress. */
   redactEvents?: RedactJobEvents;
+  /** v1.6 — bulk-redact batch store. */
+  redactBatches?: RedactBatchStore;
   /** Per-upload byte cap for /v1/redact/jobs. Default 50 MB (v1.5). */
   redactMaxUploadBytes?: number;
 }
@@ -257,6 +260,9 @@ export function createApp(deps: AppDeps): Express {
           : {}),
         ...(deps.redactEvents !== undefined
           ? { events: deps.redactEvents }
+          : {}),
+        ...(deps.redactBatches !== undefined
+          ? { batches: deps.redactBatches }
           : {}),
       }),
     );

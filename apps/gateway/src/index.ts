@@ -19,6 +19,7 @@ import {
   AuditLogger,
   MagicLinkStore,
   RecognizerMissStore,
+  RedactBatchStore,
   RedactJobStore,
   SessionManager,
   TokenVault,
@@ -172,6 +173,7 @@ async function main(): Promise<void> {
 
   // Phase 17 v1.4/v1.5 — Redact module wiring.
   const redactJobStore = new RedactJobStore(dbHandle.db);
+  const redactBatchStore = new RedactBatchStore(dbHandle.db);
   const jobStorage = new JobStorage({ baseDir: config.REDACT_JOBS_DIR });
   const redactEvents = new RedactJobEvents();
   const redactPipeline = new RedactPipeline({
@@ -310,6 +312,7 @@ async function main(): Promise<void> {
     redactStorage: jobStorage,
     redactPipeline,
     redactEvents,
+    redactBatches: redactBatchStore,
     redactMaxUploadBytes: config.REDACT_MAX_UPLOAD_BYTES,
     ...(mailer !== undefined ? { mailer } : {}),
     ...(config.PUBLIC_URL !== undefined ? { publicUrl: config.PUBLIC_URL } : {}),
