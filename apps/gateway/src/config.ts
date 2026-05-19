@@ -154,12 +154,24 @@ const configSchema = z.object({
   /** Base directory for per-job artifacts. Mounted on the appliance
    *  volume so artifacts survive container recreate. */
   REDACT_JOBS_DIR: z.string().default('/var/lib/vibe-shield/redact/jobs'),
-  /** Per-upload byte cap. Default 25 MB. */
+  /** Per-upload byte cap. Default 25 MB for images, 50 MB for PDFs
+   *  (PDFs compress text; large book-length PDFs are rare in CPA
+   *  workflows). v1.5 bumped to 50 MB to accommodate scanned bank
+   *  statements with many pages. */
   REDACT_MAX_UPLOAD_BYTES: z.coerce
     .number()
     .int()
     .positive()
-    .default(25 * 1024 * 1024),
+    .default(50 * 1024 * 1024),
+  /** v1.5 — artifact-purge cron interval, ms. Default 1 hour.
+   *  Walks completed-and-past-expiry jobs and removes the on-disk
+   *  directory + the DB row. Set to 0 to disable (operator does
+   *  cleanup manually). */
+  REDACT_PURGE_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(60 * 60 * 1000),
 });
 
 export type GatewayConfig = z.infer<typeof configSchema>;

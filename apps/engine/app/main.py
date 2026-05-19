@@ -28,6 +28,8 @@ from app.schemas import (
     RecognizerMissEntry,
     RecognizersResponse,
     RedactImageResponse,
+    RedactPdfPage,
+    RedactPdfResponse,
     RedactRequest,
     RedactResponse,
     TokenAllocationModel,
@@ -222,6 +224,88 @@ def create_app(settings: Settings | None = None, analyzer: AnalyzerService | Non
                 )
                 for r in result.masked_regions
             ],
+        )
+
+    @app.post("/redact-pdf", response_model=RedactPdfResponse)
+    def redact_pdf(
+        body: dict[str, object],
+        a: AnalyzerService = Depends(get_analyzer),
+    ) -> RedactPdfResponse:
+        """v1.5 — multi-page PDF redaction.
+
+        Body: ``{"pdf_base64": <b64>, "dpi": <int|default 200>}``.
+        Returns per-page masked PNGs + token maps; the gateway
+        reassembles the PDF on its side via pdf-lib.
+
+        Hard rule: fails closed. A bad PDF, a missing poppler, or any
+        per-page error raises a 503 — we never return a partial result
+        that the gateway could mistakenly persist as ``completed``.
+        """
+        import hashlib
+
+        from pdf2image import convert_from_bytes  # type: ignore[import-untyped]
+        from pdf2image.exceptions import (  # type: ignore[import-untyped]
+            PDFInfoNotInstalledError,
+            PDFPageCountError,
+            PDFSyntaxError,
+        )
+
+        b64 = body.get("pdf_base64", "")
+        if not isinstance(b64, str) or not b64:
+            raise ValueError("pdf_base64 is required")
+        dpi_raw = body.get("dpi", 200)
+        dpi = int(dpi_raw) if isinstance(dpi_raw, (int, str)) else 200
+        if dpi < 72 or dpi > 600:
+            raise ValueError("dpi must be between 72 and 600")
+        pdf_bytes = base64.b64decode(b64)
+        pdf_sha = hashlib.sha256(pdf_bytes).hexdigest()
+        try:
+            images = convert_from_bytes(pdf_bytes, dpi=dpi, fmt="png")
+        except (PDFInfoNotInstalledError, PDFPageCountError, PDFSyntaxError) as e:
+            # PDFInfoNotInstalledError means poppler-utils is missing
+            # from the image — fail closed loudly so an operator fixes
+            # the build, never silently degrade to image-only.
+            raise RuntimeError(f"pdf rasterization failed: {e!s}") from e
+
+        redactor = _get_image_redactor(a)
+        pages: list[RedactPdfPage] = []
+        all_tokens: list[TokenAllocationModel] = []
+        from io import BytesIO
+
+        for i, img in enumerate(images, start=1):
+            buf = BytesIO()
+            img.save(buf, format="PNG")
+            page_bytes = buf.getvalue()
+            result = redactor.redact(page_bytes)
+            page = RedactPdfPage(
+                page_number=i,
+                masked_image_sha256=result.masked_image_sha256,
+                masked_image_base64=base64.b64encode(result.masked_image_bytes).decode("ascii"),
+                redacted_text=result.redacted_text,
+                tokens=[
+                    TokenAllocationModel(token=t, entity_type=et, cleartext=ct)
+                    for (t, et, ct) in result.tokens
+                ],
+                masked_regions=[
+                    MaskedRegionModel(
+                        entity_type=r.entity_type,
+                        token=r.token,
+                        x=r.x,
+                        y=r.y,
+                        width=r.width,
+                        height=r.height,
+                    )
+                    for r in result.masked_regions
+                ],
+            )
+            pages.append(page)
+            all_tokens.extend(page.tokens)
+
+        return RedactPdfResponse(
+            pdf_sha256=pdf_sha,
+            pages_count=len(pages),
+            pages=pages,
+            tokens_concatenated=all_tokens,
         )
 
     return app

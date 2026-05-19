@@ -79,6 +79,23 @@ export interface RedactImageResponse {
   masked_regions: EngineMaskedRegion[];
 }
 
+/** v1.5 — per-page entry from /redact-pdf. */
+export interface RedactPdfPage {
+  page_number: number;
+  masked_image_sha256: string;
+  masked_image_base64: string;
+  redacted_text: string;
+  tokens: EngineTokenEntry[];
+  masked_regions: EngineMaskedRegion[];
+}
+
+export interface RedactPdfResponse {
+  pdf_sha256: string;
+  pages_count: number;
+  pages: RedactPdfPage[];
+  tokens_concatenated: EngineTokenEntry[];
+}
+
 export interface AnalyzeResponse {
   results: EngineSpan[];
 }
@@ -125,6 +142,28 @@ export class EngineClient {
       // Image redaction is heavier than text (OCR + face detection +
       // barcode scan); give it a longer timeout than the default 30s.
       120_000,
+    );
+  }
+
+  /**
+   * v1.5 — redact a multi-page PDF. ``pdfBytes`` is the raw PDF; the
+   * engine rasterizes via poppler/pdf2image at the requested DPI and
+   * runs the image pipeline per page.
+   *
+   * Timeout scales with page count: ~30s per page upper bound. For a
+   * 50-page PDF that's 25 minutes — long but bounded; clients should
+   * use the async + SSE path for documents over ~5 pages.
+   */
+  async redactPdf(
+    pdfBytes: Buffer,
+    opts: { dpi?: number; timeoutMs?: number; correlationId?: string } = {},
+  ): Promise<RedactPdfResponse> {
+    const dpi = opts.dpi ?? 200;
+    return this.post<RedactPdfResponse>(
+      '/redact-pdf',
+      { pdf_base64: pdfBytes.toString('base64'), dpi },
+      opts.correlationId,
+      opts.timeoutMs ?? 30 * 60_000,
     );
   }
 

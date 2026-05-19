@@ -31,8 +31,14 @@ import {
 } from '@kisaesdevlab/vibe-shield-schema';
 import { createApp } from '../src/app.js';
 import { SESSION_COOKIE_NAME } from '../src/auth/cookie.js';
-import type { EngineClient, RedactImageResponse } from '../src/engine/client.js';
+import type {
+  EngineClient,
+  RedactImageResponse,
+  RedactPdfResponse,
+} from '../src/engine/client.js';
+import { RedactJobEvents } from '../src/redact/job-events.js';
 import { RedactPipeline } from '../src/redact/pipeline.js';
+import { RedactPurgeCron } from '../src/redact/purge-cron.js';
 import { JobStorage } from '../src/redact/storage.js';
 import {
   emptyMessage,
@@ -51,12 +57,19 @@ const SAMPLE_PNG = Buffer.from(
   'base64',
 );
 
-function makeEngineStub(canned: RedactImageResponse): EngineClient {
+function makeEngineStub(
+  canned: RedactImageResponse,
+  pdfCanned?: RedactPdfResponse,
+): EngineClient {
   return {
     redact: () => Promise.reject(new Error('not used')),
     analyze: () => Promise.reject(new Error('not used')),
     health: () => Promise.resolve({ status: 'ok', model_loaded: true }),
     redactImage: () => Promise.resolve(canned),
+    redactPdf: () =>
+      pdfCanned !== undefined
+        ? Promise.resolve(pdfCanned)
+        : Promise.reject(new Error('no PDF stub')),
   } as unknown as EngineClient;
 }
 
@@ -212,12 +225,12 @@ describe.skipIf(!integrationEnabled)('Redact module (Phase 17 v1.4)', () => {
     const r = await request(app)
       .post('/v1/redact/jobs')
       .set('Cookie', cookie)
-      .attach('file', Buffer.from('not a real pdf'), {
-        filename: 'doc.pdf',
-        contentType: 'application/pdf',
+      .attach('file', Buffer.from('PK fake docx'), {
+        filename: 'doc.docx',
+        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       });
     expect(r.status).toBe(400);
-    expect(r.body.error.message).toContain('PDF lands in v1.5');
+    expect(r.body.error.message).toContain('unsupported file type');
   });
 
   it('viewer can list + read own jobs but cannot upload', async () => {
@@ -297,6 +310,164 @@ describe.skipIf(!integrationEnabled)('Redact module (Phase 17 v1.4)', () => {
       .get(`/v1/redact/jobs/${jobId}`)
       .set('Cookie', cookie);
     expect(detail.status).toBe(404);
+  });
+
+  it('v1.5: PDF upload runs async and the multi-page artifact is assembled', async () => {
+    const pdfPipeline = new RedactPipeline({
+      jobs,
+      engine: makeEngineStub(DEFAULT_ENGINE_RESP, {
+        pdf_sha256: 'c'.repeat(64),
+        pages_count: 3,
+        pages: [1, 2, 3].map((n) => ({
+          page_number: n,
+          masked_image_sha256: `m${String(n)}`,
+          masked_image_base64: SAMPLE_PNG.toString('base64'),
+          redacted_text: `Page ${String(n)} content with <PERSON_1>.`,
+          tokens: [
+            { token: '<PERSON_1>', entity_type: 'PERSON', cleartext: 'Alice' },
+          ],
+          masked_regions: [
+            { entity_type: 'PERSON', token: '<PERSON_1>', x: 0, y: 0, width: 10, height: 10 },
+          ],
+        })),
+        tokens_concatenated: [
+          { token: '<PERSON_1>', entity_type: 'PERSON', cleartext: 'Alice' },
+          { token: '<PERSON_1>', entity_type: 'PERSON', cleartext: 'Bob' },
+          { token: '<PERSON_1>', entity_type: 'PERSON', cleartext: 'Carol' },
+        ],
+      }),
+      storage,
+      audit: new AuditLogger(handle.db),
+      logger: silent,
+    });
+    const pdfApp = createApp({
+      db: handle.db,
+      apiKeys: new ApiKeyStore(handle.db),
+      sessions: new SessionManager(handle.db),
+      vault: new TokenVault(handle.db, new StaticKeyResolver()),
+      engine: stubEngine(),
+      anthropic: stubAnthropic(emptyMessage()),
+      logger: silent,
+      maxRequestBytes: 64 * 1024 * 1024,
+      sessionTtlMinutes: 60,
+      adminKey: 'vs-admin-redact-test',
+      users,
+      userSessions: new UserSessionStore(handle.db, 60),
+      magicLinks,
+      audit: new AuditLogger(handle.db),
+      redactJobs: jobs,
+      redactStorage: storage,
+      redactPipeline: pdfPipeline,
+      redactMaxUploadBytes: 50 * 1024 * 1024,
+    });
+    const op = await users.create({ email: 'pdf-op@firm.example' });
+    await users.setRole(op.id, 'redact', 'operator');
+    const cookie = await consumeMagicLink(pdfApp, magicLinks, 'pdf-op@firm.example');
+    const pdfBytes = Buffer.from('%PDF-1.4 fake', 'utf8');
+    const r = await request(pdfApp)
+      .post('/v1/redact/jobs')
+      .set('Cookie', cookie)
+      .attach('file', pdfBytes, { filename: 'statement.pdf', contentType: 'application/pdf' });
+    // 202 immediately, because PDFs go through the async path.
+    expect(r.status).toBe(202);
+    expect(r.body.status).toBe('pending');
+    const jobId = r.body.id as string;
+    // The async pipeline completes within a few hundred ms because
+    // the engine is stubbed.
+    let final = r.body;
+    for (let i = 0; i < 30; i++) {
+      const detail = await request(pdfApp)
+        .get(`/v1/redact/jobs/${jobId}`)
+        .set('Cookie', cookie);
+      final = detail.body;
+      if (final.status === 'completed' || final.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    expect(final.status).toBe('completed');
+    expect(final.pages_count).toBe(3);
+
+    // Confirm the assembled redacted PDF has 3 pages (pdf-lib will
+    // emit a valid PDF). Quick assertion: file > 1KB.
+    const dl = await request(pdfApp)
+      .get(`/v1/redact/jobs/${jobId}/artifacts/redacted`)
+      .set('Cookie', cookie);
+    expect(dl.status).toBe(200);
+    expect(dl.body.length).toBeGreaterThan(1024);
+    expect(dl.body.slice(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('v1.5: purge cron removes expired completed jobs + their dirs', async () => {
+    const op = await users.create({ email: 'purge-op@firm.example' });
+    await users.setRole(op.id, 'redact', 'operator');
+    const cookie = await consumeMagicLink(app, magicLinks, 'purge-op@firm.example');
+    const upload = await request(app)
+      .post('/v1/redact/jobs')
+      .set('Cookie', cookie)
+      .attach('file', SAMPLE_PNG, { filename: 'forpurge.png', contentType: 'image/png' });
+    const jobId = upload.body.id as string;
+    const jobDir = join(tmpDir, jobId);
+    await expect(stat(jobDir)).resolves.toBeTruthy();
+
+    // Force-expire it.
+    await handle.client`UPDATE vs_redact_jobs SET expires_at = NOW() - INTERVAL '1 day' WHERE id = ${jobId}`;
+
+    const cron = new RedactPurgeCron({
+      jobs,
+      storage,
+      logger: silent,
+      intervalMs: 0,
+    });
+    const cleaned = await cron.runOnce();
+    expect(cleaned).toBeGreaterThanOrEqual(1);
+    await expect(stat(jobDir)).rejects.toHaveProperty('code', 'ENOENT');
+
+    const after = await request(app)
+      .get(`/v1/redact/jobs/${jobId}`)
+      .set('Cookie', cookie);
+    expect(after.status).toBe(404);
+  });
+
+  it('v1.5: SSE stream replays snapshot for completed job + closes', async () => {
+    const events = new RedactJobEvents();
+    const sseApp = createApp({
+      db: handle.db,
+      apiKeys: new ApiKeyStore(handle.db),
+      sessions: new SessionManager(handle.db),
+      vault: new TokenVault(handle.db, new StaticKeyResolver()),
+      engine: stubEngine(),
+      anthropic: stubAnthropic(emptyMessage()),
+      logger: silent,
+      maxRequestBytes: 64 * 1024 * 1024,
+      sessionTtlMinutes: 60,
+      adminKey: 'vs-admin-redact-test',
+      users,
+      userSessions: new UserSessionStore(handle.db, 60),
+      magicLinks,
+      audit: new AuditLogger(handle.db),
+      redactJobs: jobs,
+      redactStorage: storage,
+      redactPipeline: pipeline,
+      redactEvents: events,
+      redactMaxUploadBytes: 50 * 1024 * 1024,
+    });
+    const op = await users.create({ email: 'sse-op@firm.example' });
+    await users.setRole(op.id, 'redact', 'operator');
+    const cookie = await consumeMagicLink(sseApp, magicLinks, 'sse-op@firm.example');
+    const upload = await request(sseApp)
+      .post('/v1/redact/jobs')
+      .set('Cookie', cookie)
+      .attach('file', SAMPLE_PNG, { filename: 'sse.png', contentType: 'image/png' });
+    const jobId = upload.body.id as string;
+
+    const sse = await request(sseApp)
+      .get(`/v1/redact/jobs/${jobId}/stream`)
+      .set('Cookie', cookie)
+      .buffer(true);
+    expect(sse.status).toBe(200);
+    expect(sse.headers['content-type']).toContain('text/event-stream');
+    expect(sse.text).toContain('event: snapshot');
+    // Completed-on-arrival → terminal job_completed event included.
+    expect(sse.text).toContain('event: job_completed');
   });
 
   it('engine failure marks the job failed and surfaces the error', async () => {

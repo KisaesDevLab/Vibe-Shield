@@ -40,7 +40,9 @@ import { PromptRegistry } from './prompts/registry.js';
 import { RateLimiter } from './quota/rate-limiter.js';
 import { SpendTracker } from './quota/spend-cap.js';
 import { SpendRateLimiter } from './quota/spend-rate-limiter.js';
+import { RedactJobEvents } from './redact/job-events.js';
 import { RedactPipeline } from './redact/pipeline.js';
+import { RedactPurgeCron } from './redact/purge-cron.js';
 import { JobStorage } from './redact/storage.js';
 import { PerTenantKeyResolver } from './tenant-key/resolver.js';
 
@@ -168,14 +170,16 @@ async function main(): Promise<void> {
   });
   reprobe.start();
 
-  // Phase 17 v1.4 — Redact module wiring.
+  // Phase 17 v1.4/v1.5 — Redact module wiring.
   const redactJobStore = new RedactJobStore(dbHandle.db);
   const jobStorage = new JobStorage({ baseDir: config.REDACT_JOBS_DIR });
+  const redactEvents = new RedactJobEvents();
   const redactPipeline = new RedactPipeline({
     jobs: redactJobStore,
     engine,
     storage: jobStorage,
     audit,
+    events: redactEvents,
     logger,
   });
   // Reap any jobs that were running when the gateway crashed.
@@ -187,6 +191,16 @@ async function main(): Promise<void> {
       }
     })
     .catch(() => undefined);
+  // v1.5 — artifact-purge cron. Walks expired completed jobs hourly
+  // (configurable) and removes disk + DB.
+  const redactPurgeCron = new RedactPurgeCron({
+    jobs: redactJobStore,
+    storage: jobStorage,
+    audit,
+    logger,
+    intervalMs: config.REDACT_PURGE_INTERVAL_MS,
+  });
+  redactPurgeCron.start();
 
   // Phase 24 — identity v2 wiring. Constructed unconditionally; the
   // auth routes themselves degrade gracefully when SMTP isn't set.
@@ -295,6 +309,7 @@ async function main(): Promise<void> {
     redactJobs: redactJobStore,
     redactStorage: jobStorage,
     redactPipeline,
+    redactEvents,
     redactMaxUploadBytes: config.REDACT_MAX_UPLOAD_BYTES,
     ...(mailer !== undefined ? { mailer } : {}),
     ...(config.PUBLIC_URL !== undefined ? { publicUrl: config.PUBLIC_URL } : {}),
@@ -321,6 +336,7 @@ async function main(): Promise<void> {
   const shutdown = (signal: string): void => {
     logger.info({ signal }, 'shutting down');
     reprobe.stop();
+    redactPurgeCron.stop();
     server.close(() => {
       tenantKeys.clear();
       void redis.quit().catch(() => undefined);
